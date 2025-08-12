@@ -42,6 +42,58 @@ def get_args():
     return args
 
 
+def inbatch_loss(user_emb, pos_emb, next_token_type, loss_type='cross_entropy'):
+    """
+    计算in-batch负样本loss
+
+    Args:
+        user_emb: [B, L, D]
+        pos_emb: [B, L, D]
+        next_token_type: [B, L]，token类型掩码，1表示item
+        loss_type: str, 选择损失计算方式，'cross_entropy'或'softmax_max_diff'
+
+    Returns:
+        loss_inbatch: 计算得到的in-batch负样本loss
+    """
+    B, L, D = user_emb.shape
+
+    # flatten
+    user_emb_2d = user_emb.reshape(B * L, D)
+    pos_emb_2d = pos_emb.reshape(B * L, D)
+
+    # mask，筛选有效item位置
+    mask_1d = (next_token_type == 1).reshape(B * L)
+    user_emb_valid = user_emb_2d[mask_1d]
+    pos_emb_valid = pos_emb_2d[mask_1d]
+
+    # 计算inbatch logits
+    logits = torch.matmul(user_emb_valid, pos_emb_valid.T)  # [N, N], N=有效位置数
+
+    if loss_type == 'cross_entropy':
+        labels = torch.arange(logits.size(0), device=user_emb.device)
+        criterion = torch.nn.CrossEntropyLoss()
+        loss_inbatch = criterion(logits, labels)
+
+    elif loss_type == 'softmax_max_diff':
+        # 对角线为正样本分数
+        pos_scores = logits.diagonal()  # [N]
+
+        # 先将对角线元素屏蔽（负无穷），再取每行最大负样本得分
+        diag_mask = torch.eye(logits.size(0), dtype=torch.bool, device=logits.device)
+        neg_logits = logits.masked_fill(diag_mask, float('-inf'))
+        max_neg_scores, _ = neg_logits.max(dim=1)  # [N]
+
+        # 计算差值并softmax：loss = -log( exp(pos - max_neg) / sum(exp(pos - max_neg)) )
+        # 实际等价于对pos - max_neg做log_softmax并取负均值
+        diff = pos_scores - max_neg_scores
+        loss_inbatch = -torch.log_softmax(diff, dim=0).mean()
+
+    else:
+        raise ValueError(f"Unknown loss_type {loss_type}")
+
+    return loss_inbatch
+
+
 if __name__ == '__main__':
     Path(os.environ.get('TRAIN_LOG_PATH')).mkdir(parents=True, exist_ok=True)
     Path(os.environ.get('TRAIN_TF_EVENTS_PATH')).mkdir(parents=True, exist_ok=True)
@@ -91,7 +143,20 @@ if __name__ == '__main__':
 
     bce_criterion = torch.nn.BCEWithLogitsLoss(reduction='mean')
     triplet_criterion = torch.nn.TripletMarginLoss(margin=0.5, p=2)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.98))
+    # optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.98))
+    # 1. 优化器增加 weight_decay
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.98), weight_decay=1e-5)  # 1e-5只是示例
+
+    # 2. 新增学习率调度器（warmup示例）
+    def get_lr_lambda(warmup_steps):
+        def lr_lambda(current_step):
+            if current_step < warmup_steps:
+                return float(current_step) / float(max(1, warmup_steps))
+            return 1.0
+        return lr_lambda
+
+    warmup_steps = 1000  # 可以根据你训练步数调节
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=get_lr_lambda(warmup_steps))
 
     best_val_ndcg, best_val_hr = 0.0, 0.0
     best_test_ndcg, best_test_hr = 0.0, 0.0
@@ -159,8 +224,12 @@ if __name__ == '__main__':
             for param in model.item_emb.parameters():
                 loss += args.l2_emb * torch.norm(param)
             loss.backward()
-            optimizer.step()
-
+            # 这里加梯度裁剪
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step() 
+            # 这里调用学习率调度器step，完成warmup
+            scheduler.step()
+            
         model.eval()
         valid_loss_sum = 0
         for step, batch in tqdm(enumerate(valid_loader), total=len(valid_loader)):
