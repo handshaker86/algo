@@ -349,7 +349,7 @@ class BaselineModel(torch.nn.Module):
         return log_feats
 
     def forward(
-        self, user_item, pos_seqs, neg_seqs, mask, next_mask, next_action_type, seq_feature, pos_feature, neg_feature
+        self, user_item, pos_seqs, neg_seqs, mask, next_mask, next_action_type, seq_feature, pos_feature, neg_feature, return_emb=False
     ):
         """
         训练时调用，计算正负样本的logits
@@ -379,7 +379,9 @@ class BaselineModel(torch.nn.Module):
         neg_logits = (log_feats * neg_embs).sum(dim=-1)
         pos_logits = pos_logits * loss_mask
         neg_logits = neg_logits * loss_mask
-
+        if return_emb:
+            return pos_logits, neg_logits, log_feats, pos_embs, neg_embs
+        
         return pos_logits, neg_logits
 
     def predict(self, log_seqs, seq_feature, mask):

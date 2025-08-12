@@ -90,6 +90,7 @@ if __name__ == '__main__':
             raise RuntimeError('failed loading state_dicts, pls check file path!')
 
     bce_criterion = torch.nn.BCEWithLogitsLoss(reduction='mean')
+    triplet_criterion = torch.nn.TripletMarginLoss(margin=0.5, p=2)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.98))
 
     best_val_ndcg, best_val_hr = 0.0, 0.0
@@ -107,26 +108,52 @@ if __name__ == '__main__':
             seq = seq.to(args.device)
             pos = pos.to(args.device)
             neg = neg.to(args.device)
-            pos_logits, neg_logits = model(
-                seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat
+            # pos_logits, neg_logits = model(
+            #     seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat
+            # )
+            pos_logits, neg_logits, user_emb, pos_emb, neg_emb = model(
+                seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat,
+                return_emb=True  # 新增参数控制是否返回 embedding
             )
             pos_labels, neg_labels = torch.ones(pos_logits.shape, device=args.device), torch.zeros(
                 neg_logits.shape, device=args.device
             )
             optimizer.zero_grad()
             indices = np.where(next_token_type == 1)
-            loss = bce_criterion(pos_logits[indices], pos_labels[indices])
-            loss += bce_criterion(neg_logits[indices], neg_labels[indices])
+            loss_bce = bce_criterion(pos_logits[indices], pos_labels[indices])
+            loss_bce += bce_criterion(neg_logits[indices], neg_labels[indices])
+            # Triplet Loss（只对 next_token_type == 1 的样本）
+            triplet_loss = triplet_criterion(
+                user_emb[indices], pos_emb[indices], neg_emb[indices]
+            )
 
+            # 总损失
+            loss = loss_bce + 0.1 * triplet_loss  # 0.1 是权重，可调
+            # log_json = json.dumps(
+            #     {'global_step': global_step, 'loss': loss.item(), 'epoch': epoch, 'time': time.time()}
+            # )
+            # log_file.write(log_json + '\n')
+            # log_file.flush()
+            # print(log_json)
+
+            # writer.add_scalar('Loss/train', loss.item(), global_step)
             log_json = json.dumps(
-                {'global_step': global_step, 'loss': loss.item(), 'epoch': epoch, 'time': time.time()}
+                {
+                    'global_step': global_step,
+                    'loss_bce': loss_bce.item(),
+                    'triplet_loss': triplet_loss.item(),
+                    'loss_total': loss.item(),
+                    'epoch': epoch,
+                    'time': time.time()
+                }
             )
             log_file.write(log_json + '\n')
             log_file.flush()
             print(log_json)
 
-            writer.add_scalar('Loss/train', loss.item(), global_step)
-
+            writer.add_scalar('Loss/train_bce', loss_bce.item(), global_step)
+            writer.add_scalar('Loss/train_triplet', triplet_loss.item(), global_step)
+            writer.add_scalar('Loss/train_total', loss.item(), global_step)
             global_step += 1
 
             for param in model.item_emb.parameters():
