@@ -124,6 +124,7 @@ class BaselineModel(torch.nn.Module):
         self.attention_layers = torch.nn.ModuleList()
         self.forward_layernorms = torch.nn.ModuleList()
         self.forward_layers = torch.nn.ModuleList()
+        self.temp = 0.07
 
         self._init_feat_info(feat_statistics, feat_types)
 
@@ -347,6 +348,22 @@ class BaselineModel(torch.nn.Module):
         log_feats = self.last_layernorm(seqs)
 
         return log_feats
+    
+    def compute_infonce_loss(self, seq_embs, pos_embs, neg_embs, loss_mask):
+        hidden_size = neg_embs.size(-1)
+        seq_embs = seq_embs / seq_embs.norm(dim=-1, keepdim=True)
+        pos_embs = pos_embs / pos_embs.norm(dim=-1, keepdim=True)
+        neg_embs = neg_embs / neg_embs.norm(dim=-1, keepdim=True)
+        pos_logits = F.cosine_similarity(seq_embs, pos_embs, dim=-1).unsqueeze(-1)
+        neg_embedding_all = neg_embs.reshape(-1, hidden_size)
+        neg_logits = torch.matmul(seq_embs, neg_embedding_all.transpose(-1, -2))
+        logits = torch.cat([pos_logits, neg_logits], dim=-1)
+        logits = logits[loss_mask.bool()] / self.temp
+        labels = torch.zeros(logits.size(0), device=logits.device, dtype=torch.int64)
+        loss = F.cross_entropy(logits, labels)
+
+        return loss
+        
 
     def forward(
         self, user_item, pos_seqs, neg_seqs, mask, next_mask, next_action_type, seq_feature, pos_feature, neg_feature
@@ -375,12 +392,12 @@ class BaselineModel(torch.nn.Module):
         pos_embs = self.feat2emb(pos_seqs, pos_feature, include_user=False)
         neg_embs = self.feat2emb(neg_seqs, neg_feature, include_user=False)
 
-        pos_logits = (log_feats * pos_embs).sum(dim=-1)
-        neg_logits = (log_feats * neg_embs).sum(dim=-1)
-        pos_logits = pos_logits * loss_mask
-        neg_logits = neg_logits * loss_mask
+        # pos_logits = (log_feats * pos_embs).sum(dim=-1)
+        # neg_logits = (log_feats * neg_embs).sum(dim=-1)
+        # pos_logits = pos_logits * loss_mask
+        # neg_logits = neg_logits * loss_mask
 
-        return pos_logits, neg_logits
+        return log_feats, pos_embs, neg_embs
 
     def predict(self, log_seqs, seq_feature, mask):
         """

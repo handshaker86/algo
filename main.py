@@ -107,16 +107,13 @@ if __name__ == '__main__':
             seq = seq.to(args.device)
             pos = pos.to(args.device)
             neg = neg.to(args.device)
-            pos_logits, neg_logits = model(
-                seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat
-            )
-            pos_labels, neg_labels = torch.ones(pos_logits.shape, device=args.device), torch.zeros(
-                neg_logits.shape, device=args.device
+            seq_embs, pos_embs, neg_embs = model(seq, pos, neg, token_type, seq_feat, pos_feat, neg_feat)
+            pos_labels, neg_labels = torch.ones(pos_embs.shape, device=args.device), torch.zeros(
+                neg_embs.shape, device=args.device
             )
             optimizer.zero_grad()
-            indices = np.where(next_token_type == 1)
-            loss = bce_criterion(pos_logits[indices], pos_labels[indices])
-            loss += bce_criterion(neg_logits[indices], neg_labels[indices])
+            loss_mask = (next_token_type == 1).to(args.device)
+            loss = model.compute_infonce_loss(seq_embs, pos_embs, neg_embs, loss_mask)
 
             log_json = json.dumps(
                 {'global_step': global_step, 'loss': loss.item(), 'epoch': epoch, 'time': time.time()}
