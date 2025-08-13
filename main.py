@@ -3,7 +3,7 @@ import json
 import os
 import time
 from pathlib import Path
-
+import math
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
@@ -145,18 +145,22 @@ if __name__ == '__main__':
     triplet_criterion = torch.nn.TripletMarginLoss(margin=0.5, p=2)
     # optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.98))
     # 1. 优化器增加 weight_decay
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.98), weight_decay=1e-5)  # 1e-5只是示例
-
+    no_decay = ['bias', 'LayerNorm.weight', 'embedding']
+    optimizer_grouped_parameters = [
+        {'params': [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)], 'weight_decay': 1e-5},
+        {'params': [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
+    ]
+    optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=args.lr, betas=(0.9, 0.98))
     # 2. 新增学习率调度器（warmup示例）
-    def get_lr_lambda(warmup_steps):
-        def lr_lambda(current_step):
-            if current_step < warmup_steps:
-                return float(current_step) / float(max(1, warmup_steps))
-            return 1.0
-        return lr_lambda
+    
+    def lr_lambda(current_step):
+        warmup_steps = 1000
+        total_steps = args.num_epochs * len(train_loader)
+        if current_step < warmup_steps:
+            return float(current_step) / float(max(1, warmup_steps))
+        return max(0.0, 0.5 * (1.0 + math.cos(math.pi * (current_step - warmup_steps) / total_steps)))
 
-    warmup_steps = 1000  # 可以根据你训练步数调节
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=get_lr_lambda(warmup_steps))
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
     best_val_ndcg, best_val_hr = 0.0, 0.0
     best_test_ndcg, best_test_hr = 0.0, 0.0
