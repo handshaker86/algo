@@ -413,6 +413,8 @@ class BaselineModel(torch.nn.Module):
 
         final_feat = log_feats[:, -1, :]
 
+        final_feat = final_feat / final_feat.norm(dim=-1, keepdim=True)
+        
         return final_feat
 
     def save_item_emb(self, item_ids, retrieval_ids, feat_dict, save_path, batch_size=1024):
@@ -439,7 +441,9 @@ class BaselineModel(torch.nn.Module):
             batch_feat = np.array(batch_feat, dtype=object)
 
             batch_emb = self.feat2emb(item_seq, [batch_feat], include_user=False).squeeze(0)
-
+            
+            batch_emb = batch_emb / batch_emb.norm(dim=-1, keepdim=True)
+            
             all_embs.append(batch_emb.detach().cpu().numpy().astype(np.float32))
 
         # 合并所有批次的结果并保存

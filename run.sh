@@ -6,4 +6,4 @@ echo ${RUNTIME_SCRIPT_DIR}
 cd ${RUNTIME_SCRIPT_DIR}
 
 # write your code below
-python -u main.py
+python -u main.py --hidden_units 64  --num_blocks 4 --num_heads 4
