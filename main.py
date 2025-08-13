@@ -188,8 +188,17 @@ if __name__ == '__main__':
             triplet_loss = triplet_criterion(
                 log_feats[indices], pos_embs[indices], neg_embs[indices]
             )
-            loss = infonce_loss + 0.1 * triplet_loss
 
+            # 总损失
+            loss = infonce_loss +  triplet_loss  # 0.1 是权重，可调
+            # log_json = json.dumps(
+            #     {'global_step': global_step, 'loss': loss.item(), 'epoch': epoch, 'time': time.time()}
+            # )
+            # log_file.write(log_json + '\n')
+            # log_file.flush()
+            # print(log_json)
+
+            # writer.add_scalar('Loss/train', loss.item(), global_step)
             log_json = json.dumps(
                 {
                     'global_step': global_step,
@@ -225,15 +234,21 @@ if __name__ == '__main__':
             seq = seq.to(args.device)
             pos = pos.to(args.device)
             neg = neg.to(args.device)
-            pos_logits, neg_logits = model(
+            pos_logits, neg_logits, log_feats, pos_embs, neg_embs = model(
                 seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat
             )
             pos_labels, neg_labels = torch.ones(pos_logits.shape, device=args.device), torch.zeros(
                 neg_logits.shape, device=args.device
             )
             indices = np.where(next_token_type == 1)
-            loss = bce_criterion(pos_logits[indices], pos_labels[indices])
-            loss += bce_criterion(neg_logits[indices], neg_labels[indices])
+            # loss = bce_criterion(pos_logits[indices], pos_labels[indices])
+            # loss += bce_criterion(neg_logits[indices], neg_labels[indices])
+            infonce_loss_mask = (next_token_type == 1).to(args.device)
+            infonce_loss = model.compute_infonce_loss(log_feats, pos_embs, neg_embs, infonce_loss_mask)
+            triplet_loss = triplet_criterion(
+                log_feats[indices], pos_embs[indices], neg_embs[indices]
+            )
+            loss = infonce_loss + triplet_loss
             valid_loss_sum += loss.item()
         valid_loss_sum /= len(valid_loader)
         writer.add_scalar('Loss/valid', valid_loss_sum, global_step)
