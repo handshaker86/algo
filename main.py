@@ -145,16 +145,39 @@ if __name__ == '__main__':
     triplet_criterion = torch.nn.TripletMarginLoss(margin=0.5, p=2)
     # optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.98))
     # 1. 优化器增加 weight_decay
-    no_decay = ['bias', 'LayerNorm.weight', 'embedding']
+    no_decay_types = (torch.nn.RMSNorm, torch.nn.Embedding)
+
+    decay_params = []
+    no_decay_params = []
+
+    for module_name, module in model.named_modules():
+        for param_name, param in module.named_parameters(recurse=False):
+            full_name = f"{module_name}.{param_name}" if module_name else param_name
+            
+            # bias 一般不 decay
+            if param_name == "bias":
+                no_decay_params.append(param)
+            # LayerNorm / Embedding 全部不 decay
+            elif isinstance(module, no_decay_types):
+                no_decay_params.append(param)
+            else:
+                decay_params.append(param)
+
+    # 参数分组
     optimizer_grouped_parameters = [
-        {'params': [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)], 'weight_decay': 1e-5},
-        {'params': [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
+        {"params": decay_params, "weight_decay": 1e-6},
+        {"params": no_decay_params, "weight_decay": 0.0},
     ]
-    optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=args.lr, betas=(0.9, 0.98))
+
+    optimizer = torch.optim.AdamW(
+        optimizer_grouped_parameters,
+        lr=args.lr,
+        betas=(0.9, 0.98)
+    )
     # 2. 新增学习率调度器（warmup示例）
     
     def lr_lambda(current_step):
-        warmup_steps = 1000
+        warmup_steps = 500
         total_steps = args.num_epochs * len(train_loader)
         if current_step < warmup_steps:
             return float(current_step) / float(max(1, warmup_steps))
@@ -173,12 +196,13 @@ if __name__ == '__main__':
         if args.inference_only:
             break
         for step, batch in tqdm(enumerate(train_loader), total=len(train_loader)):
-            seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat = batch
+            seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat, time_stamp = batch
             seq = seq.to(args.device)
             pos = pos.to(args.device)
             neg = neg.to(args.device)
+            time_stamp = time_stamp.to(args.device)
             pos_logits, neg_logits, log_feats, pos_embs, neg_embs = model(
-                seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat
+                seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat, time_stamp
             )
             pos_labels, neg_labels = torch.ones(pos_logits.shape, device=args.device), torch.zeros(
                 neg_logits.shape, device=args.device
@@ -234,12 +258,13 @@ if __name__ == '__main__':
         model.eval()
         valid_loss_sum = 0
         for step, batch in tqdm(enumerate(valid_loader), total=len(valid_loader)):
-            seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat = batch
+            seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat, time_stamp = batch
             seq = seq.to(args.device)
             pos = pos.to(args.device)
             neg = neg.to(args.device)
+            time_stamp = time_stamp.to(args.device)
             pos_logits, neg_logits, log_feats, pos_embs, neg_embs = model(
-                seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat
+                seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat, time_stamp
             )
             pos_labels, neg_labels = torch.ones(pos_logits.shape, device=args.device), torch.zeros(
                 neg_logits.shape, device=args.device

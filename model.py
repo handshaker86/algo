@@ -119,6 +119,12 @@ class BaselineModel(torch.nn.Module):
         self.emb_dropout = torch.nn.Dropout(p=args.dropout_rate)
         self.sparse_emb = torch.nn.ModuleDict()
         self.emb_transform = torch.nn.ModuleDict()
+        
+        self.time_mlp = torch.nn.Sequential(
+            torch. nn.Linear(1, args.hidden_units),
+            torch.nn.ReLU(),
+            torch.nn.Linear(args.hidden_units, args.hidden_units)
+        )
 
         self.attention_layernorms = torch.nn.ModuleList()  # to be Q for self-attention
         self.attention_layers = torch.nn.ModuleList()
@@ -140,10 +146,11 @@ class BaselineModel(torch.nn.Module):
         self.userdnn = torch.nn.Linear(userdim, args.hidden_units)
         self.itemdnn = torch.nn.Linear(itemdim, args.hidden_units)
 
-        self.last_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
-
+        # self.last_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
+        self.last_layernorm = torch.nn.RMSNorm(args.hidden_units, eps=1e-8)
         for _ in range(args.num_blocks):
-            new_attn_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
+            # new_attn_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
+            new_attn_layernorm = torch.nn.RMSNorm(args.hidden_units, eps=1e-8)
             self.attention_layernorms.append(new_attn_layernorm)
 
             new_attn_layer = FlashMultiHeadAttention(
@@ -151,7 +158,8 @@ class BaselineModel(torch.nn.Module):
             )  # 优化：用FlashAttention替代标准Attention
             self.attention_layers.append(new_attn_layer)
 
-            new_fwd_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
+            # new_fwd_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
+            new_fwd_layernorm = torch.nn.RMSNorm(args.hidden_units, eps=1e-8)
             self.forward_layernorms.append(new_fwd_layernorm)
 
             new_fwd_layer = PointWiseFeedForward(args.hidden_units, args.dropout_rate)
@@ -309,7 +317,7 @@ class BaselineModel(torch.nn.Module):
             seqs_emb = all_item_emb
         return seqs_emb
 
-    def log2feats(self, log_seqs, mask, seq_feature):
+    def log2feats(self, log_seqs, mask, seq_feature, time_stamp):
         """
         Args:
             log_seqs: 序列ID
@@ -345,6 +353,14 @@ class BaselineModel(torch.nn.Module):
                 seqs = self.attention_layernorms[i](seqs + mha_outputs)
                 seqs = self.forward_layernorms[i](seqs + self.forward_layers[i](seqs))
 
+        # 加入时间特征
+        time_stamp = time_stamp.float()
+        current_time = torch.max(time_stamp, dim=1, keepdim=True)[0]  # [batch, 1]
+        delta_t = current_time - time_stamp  # [batch, maxlen] positive
+        delta_t = delta_t / (24*3600)        # sec -> day 
+        time_feats = self.time_mlp(delta_t.unsqueeze(-1))            # [batch, maxlen, d_model]
+        seqs += time_feats
+
         log_feats = self.last_layernorm(seqs)
 
         return log_feats
@@ -366,7 +382,7 @@ class BaselineModel(torch.nn.Module):
         
 
     def forward(
-        self, user_item, pos_seqs, neg_seqs, mask, next_mask, next_action_type, seq_feature, pos_feature, neg_feature,
+        self, user_item, pos_seqs, neg_seqs, mask, next_mask, next_action_type, seq_feature, pos_feature, neg_feature, time_stamp
     ):
         """
         训练时调用，计算正负样本的logits
@@ -386,7 +402,7 @@ class BaselineModel(torch.nn.Module):
             pos_logits: 正样本logits，形状为 [batch_size, maxlen]
             neg_logits: 负样本logits，形状为 [batch_size, maxlen]
         """
-        log_feats = self.log2feats(user_item, mask, seq_feature)
+        log_feats = self.log2feats(user_item, mask, seq_feature, time_stamp)
         loss_mask = (next_mask == 1).to(self.dev)
 
         pos_embs = self.feat2emb(pos_seqs, pos_feature, include_user=False)
@@ -399,7 +415,7 @@ class BaselineModel(torch.nn.Module):
 
         return pos_logits, neg_logits, log_feats, pos_embs, neg_embs
 
-    def predict(self, log_seqs, seq_feature, mask):
+    def predict(self, log_seqs, seq_feature, mask, time_stamp):
         """
         计算用户序列的表征
         Args:
@@ -409,7 +425,7 @@ class BaselineModel(torch.nn.Module):
         Returns:
             final_feat: 用户序列的表征，形状为 [batch_size, hidden_units]
         """
-        log_feats = self.log2feats(log_seqs, mask, seq_feature)
+        log_feats = self.log2feats(log_seqs, mask, seq_feature, time_stamp)
 
         final_feat = log_feats[:, -1, :]
 
