@@ -222,8 +222,6 @@ if __name__ == '__main__':
             writer.add_scalar('Loss/train_total', loss.item(), global_step)
             global_step += 1
 
-            for param in model.item_emb.parameters():
-                loss += args.l2_emb * torch.norm(param)
             loss.backward()
             # 这里加梯度裁剪
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
