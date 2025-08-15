@@ -145,12 +145,35 @@ if __name__ == '__main__':
     triplet_criterion = torch.nn.TripletMarginLoss(margin=0.5, p=2)
     # optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.98))
     # 1. 优化器增加 weight_decay
-    no_decay = ['bias', 'LayerNorm.weight', 'embedding']
+    no_decay_types = (torch.nn.RMSNorm, torch.nn.Embedding)
+
+    decay_params = []
+    no_decay_params = []
+
+    for module_name, module in model.named_modules():
+        for param_name, param in module.named_parameters(recurse=False):
+            full_name = f"{module_name}.{param_name}" if module_name else param_name
+            
+            # bias 一般不 decay
+            if param_name == "bias":
+                no_decay_params.append(param)
+            # LayerNorm / Embedding 全部不 decay
+            elif isinstance(module, no_decay_types):
+                no_decay_params.append(param)
+            else:
+                decay_params.append(param)
+
+    # 参数分组
     optimizer_grouped_parameters = [
-        {'params': [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)], 'weight_decay': 1e-5},
-        {'params': [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
+        {"params": decay_params, "weight_decay": 1e-6},
+        {"params": no_decay_params, "weight_decay": 0.0},
     ]
-    optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=args.lr, betas=(0.9, 0.98))
+
+    optimizer = torch.optim.AdamW(
+        optimizer_grouped_parameters,
+        lr=args.lr,
+        betas=(0.9, 0.98)
+    )
     # 2. 新增学习率调度器（warmup示例）
     
     def lr_lambda(current_step):
@@ -185,7 +208,9 @@ if __name__ == '__main__':
             )
             optimizer.zero_grad()
             indices = np.where(next_token_type == 1)
-            infonce_loss_mask = (next_token_type == 1).to(args.device)
+            infonce_loss_mask = (next_token_type == 1).to(args.device) # padding mask and item/user mask
+            act_type_mask = (next_action_type == 1).to(args.device) # action type mask 去掉act type为0的部分
+            infonce_loss_mask = infonce_loss_mask & act_type_mask # 只保留act type为1的部分
             infonce_loss = model.compute_infonce_loss(log_feats, pos_embs, neg_embs, infonce_loss_mask)
             # loss = bce_criterion(pos_logits[indices], pos_labels[indices])
             # loss += bce_criterion(neg_logits[indices], neg_labels[indices])
@@ -248,6 +273,8 @@ if __name__ == '__main__':
             # loss = bce_criterion(pos_logits[indices], pos_labels[indices])
             # loss += bce_criterion(neg_logits[indices], neg_labels[indices])
             infonce_loss_mask = (next_token_type == 1).to(args.device)
+            act_type_mask = (next_action_type == 1).to(args.device) # action type mask 去掉act type为0的部分
+            infonce_loss_mask = infonce_loss_mask & act_type_mask # 只保留act type为1的部分
             infonce_loss = model.compute_infonce_loss(log_feats, pos_embs, neg_embs, infonce_loss_mask)
             triplet_loss = triplet_criterion(
                 log_feats[indices], pos_embs[indices], neg_embs[indices]
