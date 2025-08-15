@@ -140,10 +140,11 @@ class BaselineModel(torch.nn.Module):
         self.userdnn = torch.nn.Linear(userdim, args.hidden_units)
         self.itemdnn = torch.nn.Linear(itemdim, args.hidden_units)
 
-        self.last_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
-
+        # self.last_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
+        self.last_layernorm = torch.nn.RMSNorm(args.hidden_units, eps=1e-8)
         for _ in range(args.num_blocks):
-            new_attn_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
+            # new_attn_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
+            new_attn_layernorm = torch.nn.RMSNorm(args.hidden_units, eps=1e-8)
             self.attention_layernorms.append(new_attn_layernorm)
 
             new_attn_layer = FlashMultiHeadAttention(
@@ -151,7 +152,8 @@ class BaselineModel(torch.nn.Module):
             )  # 优化：用FlashAttention替代标准Attention
             self.attention_layers.append(new_attn_layer)
 
-            new_fwd_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
+            # new_fwd_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
+            new_fwd_layernorm = torch.nn.RMSNorm(args.hidden_units, eps=1e-8)
             self.forward_layernorms.append(new_fwd_layernorm)
 
             new_fwd_layer = PointWiseFeedForward(args.hidden_units, args.dropout_rate)
