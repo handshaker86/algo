@@ -94,6 +94,14 @@ def inbatch_loss(user_emb, pos_emb, next_token_type, loss_type='cross_entropy'):
 
     return loss_inbatch
 
+def get_grad_norm(model, norm_type=2):
+    total_norm = 0.0
+    for p in model.parameters():
+        if p.grad is not None:
+            param_norm = p.grad.data.norm(norm_type)
+            total_norm += param_norm.item() ** norm_type
+    total_norm = total_norm ** (1. / norm_type)
+    return total_norm
 
 if __name__ == '__main__':
     Path(os.environ.get('TRAIN_LOG_PATH')).mkdir(parents=True, exist_ok=True)
@@ -228,12 +236,16 @@ if __name__ == '__main__':
             # print(log_json)
 
             # writer.add_scalar('Loss/train', loss.item(), global_step)
+            grad_norm = get_grad_norm(model)
+            current_lr = optimizer.param_groups[0]['lr']
             log_json = json.dumps(
                 {
                     'global_step': global_step,
                     'infonce_loss': infonce_loss.item(),
                     'triplet_loss': triplet_loss.item(),
                     'loss_total': loss.item(),
+                    'lr': current_lr,
+                    'grad_norm': grad_norm,
                     'epoch': epoch,
                     'time': time.time()
                 }
@@ -242,13 +254,26 @@ if __name__ == '__main__':
             log_file.flush()
             print(log_json)
 
+            if math.isnan(loss.item()) or math.isinf(grad_norm) or math.isnan(grad_norm):
+                for name, param in model.named_parameters():
+                    if param.grad is not None:
+                        if torch.isnan(param.grad).any():
+                            print(f"NaN grad in {name}")
+                        if torch.isinf(param.grad).any():
+                            print(f"Inf grad in {name}")
+                    if torch.isnan(param).any():
+                        print(f"NaN in {name}")
+                    if torch.isinf(param).any():
+                        print(f"Inf in {name}")
+
             writer.add_scalar('Loss/train_infonce', infonce_loss.item(), global_step)
             writer.add_scalar('Loss/train_triplet', triplet_loss.item(), global_step)
             writer.add_scalar('Loss/train_total', loss.item(), global_step)
+            writer.add_scalar('LR', current_lr, global_step)
             global_step += 1
 
-            for param in model.item_emb.parameters():
-                loss += args.l2_emb * torch.norm(param)
+            # for param in model.item_emb.parameters():
+            #     loss += args.l2_emb * torch.norm(param)
             loss.backward()
             # 这里加梯度裁剪
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)

@@ -158,6 +158,7 @@ def infer():
     for step, batch in tqdm(enumerate(test_loader), total=len(test_loader)):
 
         seq, token_type, seq_feat, user_id, time_stamp = batch
+        time_stamp = time_stamp.to(args.device)
         seq = seq.to(args.device)
         logits = model.predict(seq, seq_feat, token_type, time_stamp)
         for i in range(logits.shape[0]):
