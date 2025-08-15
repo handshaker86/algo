@@ -190,8 +190,9 @@ if __name__ == '__main__':
         total_steps = args.num_epochs * len(train_loader)
         if current_step < warmup_steps:
             return float(current_step) / float(max(1, warmup_steps))
-        return max(0.0, 0.5 * (1.0 + math.cos(math.pi * (current_step - warmup_steps) / total_steps)))
-
+        progress = (current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+        return 0.5 * (1.0 + math.cos(math.pi * progress))
+    
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
     best_val_ndcg, best_val_hr = 0.0, 0.0
