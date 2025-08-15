@@ -237,25 +237,21 @@ if __name__ == '__main__':
             # print(log_json)
 
             # writer.add_scalar('Loss/train', loss.item(), global_step)
-            grad_norm = get_grad_norm(model)
-            current_lr = optimizer.param_groups[0]['lr']
-            log_json = json.dumps(
-                {
-                    'global_step': global_step,
-                    'infonce_loss': infonce_loss.item(),
-                    'triplet_loss': triplet_loss.item(),
-                    'loss_total': loss.item(),
-                    'lr': current_lr,
-                    'grad_norm': grad_norm,
-                    'epoch': epoch,
-                    'time': time.time()
-                }
-            )
-            log_file.write(log_json + '\n')
-            log_file.flush()
-            print(log_json)
 
-            if math.isnan(loss.item()) or math.isinf(grad_norm) or math.isnan(grad_norm):
+
+            writer.add_scalar('Loss/train_infonce', infonce_loss.item(), global_step)
+            writer.add_scalar('Loss/train_triplet', triplet_loss.item(), global_step)
+            writer.add_scalar('Loss/train_total', loss.item(), global_step)
+            
+            global_step += 1
+
+            # for param in model.item_emb.parameters():
+            #     loss += args.l2_emb * torch.norm(param)
+            loss.backward()
+
+            grad_norm_before = get_grad_norm(model)
+
+            if math.isnan(loss.item()) or math.isinf(grad_norm_before) or math.isnan(grad_norm_before):
                 for name, param in model.named_parameters():
                     if param.grad is not None:
                         if torch.isnan(param.grad).any():
@@ -267,17 +263,27 @@ if __name__ == '__main__':
                     if torch.isinf(param).any():
                         print(f"Inf in {name}")
 
-            writer.add_scalar('Loss/train_infonce', infonce_loss.item(), global_step)
-            writer.add_scalar('Loss/train_triplet', triplet_loss.item(), global_step)
-            writer.add_scalar('Loss/train_total', loss.item(), global_step)
-            writer.add_scalar('LR', current_lr, global_step)
-            global_step += 1
-
-            # for param in model.item_emb.parameters():
-            #     loss += args.l2_emb * torch.norm(param)
-            loss.backward()
-            # 这里加梯度裁剪
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            grad_norm_after = get_grad_norm(model)
+
+            current_lr = optimizer.param_groups[0]['lr']
+            log_json = json.dumps({
+                'global_step': global_step,
+                'infonce_loss': infonce_loss.item(),
+                'triplet_loss': triplet_loss.item(),
+                'loss_total': loss.item(),
+                'lr': current_lr,
+                'grad_norm_before': grad_norm_before,
+                'grad_norm_after': grad_norm_after,
+                'epoch': epoch,
+                'time': time.time()
+            })
+            log_file.write(log_json + '\n')
+            log_file.flush()
+            print(log_json)
+            
+            writer.add_scalar('LR', current_lr, global_step)
+            
             optimizer.step() 
             # 这里调用学习率调度器step，完成warmup
             scheduler.step()
