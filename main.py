@@ -93,6 +93,14 @@ def inbatch_loss(user_emb, pos_emb, next_token_type, loss_type='cross_entropy'):
 
     return loss_inbatch
 
+def get_grad_norm(model, norm_type=2):
+    total_norm = 0.0
+    for p in model.parameters():
+        if p.grad is not None:
+            param_norm = p.grad.data.norm(norm_type)
+            total_norm += param_norm.item() ** norm_type
+    total_norm = total_norm ** (1. / norm_type)
+    return total_norm
 
 if __name__ == '__main__':
     Path(os.environ.get('TRAIN_LOG_PATH')).mkdir(parents=True, exist_ok=True)
@@ -209,8 +217,8 @@ if __name__ == '__main__':
             optimizer.zero_grad()
             indices = np.where(next_token_type == 1)
             infonce_loss_mask = (next_token_type == 1).to(args.device) # padding mask and item/user mask
-            act_type_mask = (next_action_type == 1).to(args.device) # action type mask 去掉act type为0的部分
-            infonce_loss_mask = infonce_loss_mask & act_type_mask # 只保留act type为1的部分
+            # act_type_mask = (next_action_type == 1).to(args.device) # action type mask 去掉act type为0的部分
+            # infonce_loss_mask = infonce_loss_mask & act_type_mask # 只保留act type为1的部分
             infonce_loss = model.compute_infonce_loss(log_feats, pos_embs, neg_embs, infonce_loss_mask)
             # loss = bce_criterion(pos_logits[indices], pos_labels[indices])
             # loss += bce_criterion(neg_logits[indices], neg_labels[indices])
@@ -228,12 +236,16 @@ if __name__ == '__main__':
             # print(log_json)
 
             # writer.add_scalar('Loss/train', loss.item(), global_step)
+            grad_norm = get_grad_norm(model)
+            current_lr = optimizer.param_groups[0]['lr']
             log_json = json.dumps(
                 {
                     'global_step': global_step,
                     'infonce_loss': infonce_loss.item(),
                     'triplet_loss': triplet_loss.item(),
                     'loss_total': loss.item(),
+                    'lr': current_lr,
+                    'grad_norm': grad_norm,
                     'epoch': epoch,
                     'time': time.time()
                 }
@@ -242,9 +254,22 @@ if __name__ == '__main__':
             log_file.flush()
             print(log_json)
 
+            if math.isnan(loss.item()) or math.isinf(grad_norm) or math.isnan(grad_norm):
+                for name, param in model.named_parameters():
+                    if param.grad is not None:
+                        if torch.isnan(param.grad).any():
+                            print(f"NaN grad in {name}")
+                        if torch.isinf(param.grad).any():
+                            print(f"Inf grad in {name}")
+                    if torch.isnan(param).any():
+                        print(f"NaN in {name}")
+                    if torch.isinf(param).any():
+                        print(f"Inf in {name}")
+
             writer.add_scalar('Loss/train_infonce', infonce_loss.item(), global_step)
             writer.add_scalar('Loss/train_triplet', triplet_loss.item(), global_step)
             writer.add_scalar('Loss/train_total', loss.item(), global_step)
+            writer.add_scalar('LR', current_lr, global_step)
             global_step += 1
 
             loss.backward()
@@ -271,8 +296,8 @@ if __name__ == '__main__':
             # loss = bce_criterion(pos_logits[indices], pos_labels[indices])
             # loss += bce_criterion(neg_logits[indices], neg_labels[indices])
             infonce_loss_mask = (next_token_type == 1).to(args.device)
-            act_type_mask = (next_action_type == 1).to(args.device) # action type mask 去掉act type为0的部分
-            infonce_loss_mask = infonce_loss_mask & act_type_mask # 只保留act type为1的部分
+            # act_type_mask = (next_action_type == 1).to(args.device) # action type mask 去掉act type为0的部分
+            # infonce_loss_mask = infonce_loss_mask & act_type_mask # 只保留act type为1的部分
             infonce_loss = model.compute_infonce_loss(log_feats, pos_embs, neg_embs, infonce_loss_mask)
             triplet_loss = triplet_criterion(
                 log_feats[indices], pos_embs[indices], neg_embs[indices]
