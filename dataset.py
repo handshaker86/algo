@@ -1,6 +1,7 @@
 import json
 import pickle
 import struct
+import random
 from pathlib import Path
 
 import numpy as np
@@ -48,6 +49,7 @@ class MyDataset(torch.utils.data.Dataset):
             indexer = pickle.load(ff)
             self.itemnum = len(indexer['i'])
             self.usernum = len(indexer['u'])
+        self.mask_token_id = self.itemnum + 1
         self.indexer_i_rev = {v: k for k, v in indexer['i'].items()}
         self.indexer_u_rev = {v: k for k, v in indexer['u'].items()}
         self.indexer = indexer
@@ -93,6 +95,40 @@ class MyDataset(torch.utils.data.Dataset):
         while t in s or str(t) not in self.item_feat_dict:
             t = np.random.randint(l, r)
         return t
+    
+    def apply_augmentation(self, sequence):
+        """
+        对输入的序列（列表）应用一种随机的数据增强方法。
+        """
+        seq_len = len(sequence)
+        if seq_len < 3: # 序列太短则不增强
+            return sequence
+
+        aug_method = random.choice(['crop', 'mask', 'reorder'])
+        
+        if aug_method == 'crop':
+            crop_len = random.randint(int(0.5 * seq_len), max(int(0.5 * seq_len)+1, seq_len - 1))
+            start_idx = random.randint(0, seq_len - crop_len)
+            return sequence[start_idx : start_idx + crop_len]
+
+        elif aug_method == 'mask':
+            masked_seq = list(sequence)
+            mask_ratio = 0.2 # 可设为超参数
+            for i in range(seq_len):
+                if random.random() < mask_ratio:
+                    masked_seq[i] = self.mask_token_id
+            return masked_seq
+
+        elif aug_method == 'reorder':
+            reordered_seq = list(sequence)
+            reorder_len = random.randint(2, max(3, int(0.5 * seq_len)))
+            start_idx = random.randint(0, seq_len - reorder_len)
+            sub_seq = reordered_seq[start_idx : start_idx + reorder_len]
+            random.shuffle(sub_seq)
+            reordered_seq[start_idx : start_idx + reorder_len] = sub_seq
+            return reordered_seq
+        
+        return sequence
 
     def __getitem__(self, uid):
         """
@@ -112,6 +148,12 @@ class MyDataset(torch.utils.data.Dataset):
             neg_feat: 负样本特征，每个元素为字典，key为特征ID，value为特征值
         """
         user_sequence = self._load_user_data(uid)  # 动态加载用户数据
+
+        item_sequence_list = [record[1] for record in user_sequence if record[1] is not None and record[1] > 0]
+    
+        # 3. 对物品ID序列进行两次不同的数据增强，生成两个新视图
+        aug_item_seq_1 = self.apply_augmentation(item_sequence_list)
+        aug_item_seq_2 = self.apply_augmentation(item_sequence_list)
 
         ext_user_sequence = []
         for record_tuple in user_sequence:
@@ -135,39 +177,55 @@ class MyDataset(torch.utils.data.Dataset):
         nxt = ext_user_sequence[-1]
         idx = self.maxlen
 
-        ts = set()
-        for record_tuple in ext_user_sequence:
-            if record_tuple[2] == 1 and record_tuple[0]:
-                ts.add(record_tuple[0])
+        ts = set(item_sequence_list)
 
-        # left-padding, 从后往前遍历，将用户序列填充到maxlen+1的长度
-        for record_tuple in reversed(ext_user_sequence[:-1]):
-            i, feat, type_, act_type = record_tuple
-            next_i, next_feat, next_type, next_act_type = nxt
-            feat = self.fill_missing_feat(feat, i)
-            next_feat = self.fill_missing_feat(next_feat, next_i)
-            seq[idx] = i
-            token_type[idx] = type_
-            next_token_type[idx] = next_type
-            if next_act_type is not None:
-                next_action_type[idx] = next_act_type
-            seq_feat[idx] = feat
-            if next_type == 1 and next_i != 0:
-                pos[idx] = next_i
-                pos_feat[idx] = next_feat
-                neg_id = self._random_neq(1, self.itemnum + 1, ts)
-                neg[idx] = neg_id
-                neg_feat[idx] = self.fill_missing_feat(self.item_feat_dict[str(neg_id)], neg_id)
-            nxt = record_tuple
-            idx -= 1
-            if idx == -1:
-                break
+        if nxt: # 确保序列不为空
+            for record_tuple in reversed(ext_user_sequence[:-1]):
+                i, feat, type_, act_type = record_tuple
+                next_i, next_feat, next_type, next_act_type = nxt
+                
+                feat = self.fill_missing_feat(feat, i)
+                next_feat = self.fill_missing_feat(next_feat, next_i)
+
+                seq[idx] = i
+                token_type[idx] = type_
+                next_token_type[idx] = next_type
+                if next_act_type is not None:
+                    next_action_type[idx] = next_act_type
+                seq_feat[idx] = feat
+                
+                if next_type == 1 and next_i != 0:
+                    pos[idx] = next_i
+                    pos_feat[idx] = next_feat
+                    neg_id = self._random_neq(1, self.itemnum + 1, ts)
+                    neg[idx] = neg_id
+                    neg_feat[idx] = self.fill_missing_feat(self.item_feat_dict.get(str(neg_id), {}), neg_id)
+                
+                nxt = record_tuple
+                idx -= 1
+                if idx == -1:
+                    break
 
         seq_feat = np.where(seq_feat == None, self.feature_default_value, seq_feat)
         pos_feat = np.where(pos_feat == None, self.feature_default_value, pos_feat)
         neg_feat = np.where(neg_feat == None, self.feature_default_value, neg_feat)
 
-        return seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat
+        aug_seq_1_padded = np.zeros([self.maxlen + 1], dtype=np.int32)
+        aug_seq_2_padded = np.zeros([self.maxlen + 1], dtype=np.int32)
+
+        idx1 = self.maxlen
+        for item_id in reversed(aug_item_seq_1):
+            if idx1 == -1: break
+            aug_seq_1_padded[idx1] = item_id
+            idx1 -= 1
+        
+        idx2 = self.maxlen
+        for item_id in reversed(aug_item_seq_2):
+            if idx2 == -1: break
+            aug_seq_2_padded[idx2] = item_id
+            idx2 -= 1
+
+        return seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat, aug_seq_1_padded, aug_seq_2_padded
 
     def __len__(self):
         """

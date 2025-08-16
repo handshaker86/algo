@@ -204,12 +204,10 @@ if __name__ == '__main__':
         if args.inference_only:
             break
         for step, batch in tqdm(enumerate(train_loader), total=len(train_loader)):
-            seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat = batch
-            seq = seq.to(args.device)
-            pos = pos.to(args.device)
-            neg = neg.to(args.device)
-            pos_logits, neg_logits, log_feats, pos_embs, neg_embs = model(
-                seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat
+            batch = {k: v.to(args.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+            seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat, aug_seq_1, aug_seq_2 = batch
+            pos_logits, neg_logits, log_feats, pos_embs, neg_embs, aug_feats_1, aug_feats_2 = model(
+                seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat, aug_seq_1, aug_seq_2
             )
             pos_labels, neg_labels = torch.ones(pos_logits.shape, device=args.device), torch.zeros(
                 neg_logits.shape, device=args.device
@@ -226,8 +224,17 @@ if __name__ == '__main__':
                 log_feats[indices], pos_embs[indices], neg_embs[indices]
             )
 
+            final_aug_feats_1 = aug_feats_1[infonce_loss_mask]
+            final_aug_feats_2 = aug_feats_2[infonce_loss_mask]
+            
+            # 确保有有效的样本才计算cl_loss
+            if final_aug_feats_1.size(0) > 0:
+                cl_loss = model.compute_cl4srec_loss(final_aug_feats_1, final_aug_feats_2)
+            else:
+                cl_loss = torch.tensor(0.0, device=args.device)
+
             # 总损失
-            loss = infonce_loss +  triplet_loss  # 0.1 是权重，可调
+            loss = infonce_loss +  triplet_loss +  cl_loss  # 0.1 是权重，可调
             # log_json = json.dumps(
             #     {'global_step': global_step, 'loss': loss.item(), 'epoch': epoch, 'time': time.time()}
             # )

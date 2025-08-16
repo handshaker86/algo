@@ -3,6 +3,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
+import torch.nn as nn
 from tqdm import tqdm
 
 from dataset import save_emb
@@ -78,7 +79,6 @@ class PointWiseFeedForward(torch.nn.Module):
         outputs = outputs.transpose(-1, -2)  # as Conv1D requires (N, C, Length)
         return outputs
 
-
 class BaselineModel(torch.nn.Module):
     """
     Args:
@@ -113,7 +113,7 @@ class BaselineModel(torch.nn.Module):
         # TODO: loss += args.l2_emb for regularizing embedding vectors during training
         # https://stackoverflow.com/questions/42704283/adding-l1-l2-regularization-in-pytorch
 
-        self.item_emb = torch.nn.Embedding(self.item_num + 1, args.hidden_units, padding_idx=0)
+        self.item_emb = torch.nn.Embedding(self.item_num + 2, args.hidden_units, padding_idx=0)
         self.user_emb = torch.nn.Embedding(self.user_num + 1, args.hidden_units, padding_idx=0)
         self.pos_emb = torch.nn.Embedding(2 * args.maxlen + 1, args.hidden_units, padding_idx=0)
         self.emb_dropout = torch.nn.Dropout(p=args.dropout_rate)
@@ -366,9 +366,17 @@ class BaselineModel(torch.nn.Module):
 
         return loss
         
+    def compute_cl4srec_loss(self, z1, z2):
+        z1 = F.normalize(z1, dim=-1)
+        z2 = F.normalize(z2, dim=-1)
+        logits = torch.mm(z1, z2.T) / self.temp
+        labels = torch.arange(logits.shape[0], device=logits.device)
+        loss = F.cross_entropy(logits, labels)
+        return loss
 
     def forward(
         self, user_item, pos_seqs, neg_seqs, mask, next_mask, next_action_type, seq_feature, pos_feature, neg_feature,
+        aug_seq_1, aug_seq_2
     ):
         """
         训练时调用，计算正负样本的logits
@@ -394,12 +402,17 @@ class BaselineModel(torch.nn.Module):
         pos_embs = self.feat2emb(pos_seqs, pos_feature, include_user=False)
         neg_embs = self.feat2emb(neg_seqs, neg_feature, include_user=False)
 
+        aug_token_type_1 = (aug_seq_1 != 0).int()
+        aug_token_type_2 = (aug_seq_2 != 0).int()
+        aug_feats_1 = self.log2feats(aug_seq_1, aug_token_type_1, seq_feature)
+        aug_feats_2 = self.log2feats(aug_seq_2, aug_token_type_2, seq_feature)
+
         pos_logits = (log_feats * pos_embs).sum(dim=-1)
         neg_logits = (log_feats * neg_embs).sum(dim=-1)
         pos_logits = pos_logits * loss_mask
         neg_logits = neg_logits * loss_mask
 
-        return pos_logits, neg_logits, log_feats, pos_embs, neg_embs
+        return pos_logits, neg_logits, log_feats, pos_embs, neg_embs, aug_feats_1, aug_feats_2
 
     def predict(self, log_seqs, seq_feature, mask):
         """
