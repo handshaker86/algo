@@ -21,6 +21,8 @@ def get_args():
     parser.add_argument('--batch_size', default=128, type=int)
     parser.add_argument('--lr', default=0.001, type=float)
     parser.add_argument('--maxlen', default=101, type=int)
+    parser.add_argument('--triplet_rt', default=1.0, type=float, help='triplet loss权重系数')
+    parser.add_argument('--cl_rt', default=1.0, type=float, help='contrastive loss权重系数')
 
     # Baseline Model construction
     parser.add_argument('--hidden_units', default=32, type=int)
@@ -234,7 +236,7 @@ if __name__ == '__main__':
                 cl_loss = torch.tensor(0.0, device=args.device)
 
             # 总损失
-            loss = infonce_loss +  triplet_loss +  cl_loss  # 0.1 是权重，可调
+            loss = infonce_loss +  args.triplet_rt * triplet_loss +  args.cl_rt * cl_loss  # 0.1 是权重，可调
             # log_json = json.dumps(
             #     {'global_step': global_step, 'loss': loss.item(), 'epoch': epoch, 'time': time.time()}
             # )
