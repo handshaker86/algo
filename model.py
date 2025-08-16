@@ -124,6 +124,7 @@ class BaselineModel(torch.nn.Module):
         self.attention_layers = torch.nn.ModuleList()
         self.forward_layernorms = torch.nn.ModuleList()
         self.forward_layers = torch.nn.ModuleList()
+        self.temp = 0.07
 
         self._init_feat_info(feat_statistics, feat_types)
 
@@ -139,10 +140,11 @@ class BaselineModel(torch.nn.Module):
         self.userdnn = torch.nn.Linear(userdim, args.hidden_units)
         self.itemdnn = torch.nn.Linear(itemdim, args.hidden_units)
 
-        self.last_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
-
+        # self.last_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
+        self.last_layernorm = torch.nn.RMSNorm(args.hidden_units, eps=1e-8)
         for _ in range(args.num_blocks):
-            new_attn_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
+            # new_attn_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
+            new_attn_layernorm = torch.nn.RMSNorm(args.hidden_units, eps=1e-8)
             self.attention_layernorms.append(new_attn_layernorm)
 
             new_attn_layer = FlashMultiHeadAttention(
@@ -150,7 +152,8 @@ class BaselineModel(torch.nn.Module):
             )  # 优化：用FlashAttention替代标准Attention
             self.attention_layers.append(new_attn_layer)
 
-            new_fwd_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
+            # new_fwd_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
+            new_fwd_layernorm = torch.nn.RMSNorm(args.hidden_units, eps=1e-8)
             self.forward_layernorms.append(new_fwd_layernorm)
 
             new_fwd_layer = PointWiseFeedForward(args.hidden_units, args.dropout_rate)
@@ -347,9 +350,25 @@ class BaselineModel(torch.nn.Module):
         log_feats = self.last_layernorm(seqs)
 
         return log_feats
+    
+    def compute_infonce_loss(self, seq_embs, pos_embs, neg_embs, loss_mask):
+        hidden_size = neg_embs.size(-1)
+        seq_embs = seq_embs / seq_embs.norm(dim=-1, keepdim=True)
+        pos_embs = pos_embs / pos_embs.norm(dim=-1, keepdim=True)
+        neg_embs = neg_embs / neg_embs.norm(dim=-1, keepdim=True)
+        pos_logits = F.cosine_similarity(seq_embs, pos_embs, dim=-1).unsqueeze(-1)
+        neg_embedding_all = neg_embs.reshape(-1, hidden_size)
+        neg_logits = torch.matmul(seq_embs, neg_embedding_all.transpose(-1, -2))
+        logits = torch.cat([pos_logits, neg_logits], dim=-1)
+        logits = logits[loss_mask.bool()] / self.temp
+        labels = torch.zeros(logits.size(0), device=logits.device, dtype=torch.int64)
+        loss = F.cross_entropy(logits, labels)
+
+        return loss
+        
 
     def forward(
-        self, user_item, pos_seqs, neg_seqs, mask, next_mask, next_action_type, seq_feature, pos_feature, neg_feature
+        self, user_item, pos_seqs, neg_seqs, mask, next_mask, next_action_type, seq_feature, pos_feature, neg_feature,
     ):
         """
         训练时调用，计算正负样本的logits
@@ -380,7 +399,7 @@ class BaselineModel(torch.nn.Module):
         pos_logits = pos_logits * loss_mask
         neg_logits = neg_logits * loss_mask
 
-        return pos_logits, neg_logits
+        return pos_logits, neg_logits, log_feats, pos_embs, neg_embs
 
     def predict(self, log_seqs, seq_feature, mask):
         """
@@ -396,6 +415,8 @@ class BaselineModel(torch.nn.Module):
 
         final_feat = log_feats[:, -1, :]
 
+        final_feat = final_feat / final_feat.norm(dim=-1, keepdim=True)
+        
         return final_feat
 
     def save_item_emb(self, item_ids, retrieval_ids, feat_dict, save_path, batch_size=1024):
@@ -422,7 +443,9 @@ class BaselineModel(torch.nn.Module):
             batch_feat = np.array(batch_feat, dtype=object)
 
             batch_emb = self.feat2emb(item_seq, [batch_feat], include_user=False).squeeze(0)
-
+            
+            batch_emb = batch_emb / batch_emb.norm(dim=-1, keepdim=True)
+            
             all_embs.append(batch_emb.detach().cpu().numpy().astype(np.float32))
 
         # 合并所有批次的结果并保存
