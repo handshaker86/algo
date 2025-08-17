@@ -282,7 +282,7 @@ class BaselineModel(torch.nn.Module):
                 elif feat_type.endswith('continual'):
                     feat_list.append(tensor_feature.unsqueeze(2))
 
-        for k in self.ITEM_EMB_FEAT:
+        for k in self.ITEM_EMB_FEAT:        
             # collect all data to numpy, then batch-convert
             batch_size = len(feature_array)
             emb_dim = self.ITEM_EMB_FEAT[k]

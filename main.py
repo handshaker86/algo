@@ -206,8 +206,12 @@ if __name__ == '__main__':
         if args.inference_only:
             break
         for step, batch in tqdm(enumerate(train_loader), total=len(train_loader)):
-            batch = {k: v.to(args.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
             seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat, aug_seq_1, aug_seq_2 = batch
+            seq = seq.to(args.device)
+            pos = pos.to(args.device)
+            neg = neg.to(args.device)
+            aug_seq_1 = aug_seq_1.to(args.device)
+            aug_seq_2 = aug_seq_2.to(args.device)
             pos_logits, neg_logits, log_feats, pos_embs, neg_embs, aug_feats_1, aug_feats_2 = model(
                 seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat, aug_seq_1, aug_seq_2
             )
@@ -236,7 +240,7 @@ if __name__ == '__main__':
                 cl_loss = torch.tensor(0.0, device=args.device)
 
             # 总损失
-            loss = infonce_loss +  args.triplet_rt * triplet_loss +  args.cl_rt * cl_loss  # 0.1 是权重，可调
+            loss = infonce_loss +  args.triplet_rt * triplet_loss +  args.cl_rt * cl_loss  
             # log_json = json.dumps(
             #     {'global_step': global_step, 'loss': loss.item(), 'epoch': epoch, 'time': time.time()}
             # )
@@ -291,12 +295,14 @@ if __name__ == '__main__':
         model.eval()
         valid_loss_sum = 0
         for step, batch in tqdm(enumerate(valid_loader), total=len(valid_loader)):
-            seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat = batch
+            seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat, aug_seq_1, aug_seq_2 = batch
             seq = seq.to(args.device)
             pos = pos.to(args.device)
             neg = neg.to(args.device)
-            pos_logits, neg_logits, log_feats, pos_embs, neg_embs = model(
-                seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat
+            aug_seq_1 = aug_seq_1.to(args.device)
+            aug_seq_2 = aug_seq_2.to(args.device)
+            pos_logits, neg_logits, log_feats, pos_embs, neg_embs, aug_feats_1, aug_feats_2  = model(
+                seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat, aug_seq_1, aug_seq_2
             )
             pos_labels, neg_labels = torch.ones(pos_logits.shape, device=args.device), torch.zeros(
                 neg_logits.shape, device=args.device
@@ -311,7 +317,17 @@ if __name__ == '__main__':
             triplet_loss = triplet_criterion(
                 log_feats[indices], pos_embs[indices], neg_embs[indices]
             )
-            loss = infonce_loss + triplet_loss
+            final_aug_feats_1 = aug_feats_1[infonce_loss_mask]
+            final_aug_feats_2 = aug_feats_2[infonce_loss_mask]
+            
+            # 确保有有效的样本才计算cl_loss
+            if final_aug_feats_1.size(0) > 0:
+                cl_loss = model.compute_cl4srec_loss(final_aug_feats_1, final_aug_feats_2)
+            else:
+                cl_loss = torch.tensor(0.0, device=args.device)
+
+            # 总损失
+            loss = infonce_loss +  args.triplet_rt * triplet_loss +  args.cl_rt * cl_loss  
             valid_loss_sum += loss.item()
         valid_loss_sum /= len(valid_loader)
         writer.add_scalar('Loss/valid', valid_loss_sum, global_step)

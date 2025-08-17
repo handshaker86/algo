@@ -339,17 +339,19 @@ class MyDataset(torch.utils.data.Dataset):
             pos_feat: 正样本特征, list形式
             neg_feat: 负样本特征, list形式
         """
-        seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat = zip(*batch)
+        seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat,aug_seq_1, aug_seq_2 = zip(*batch)
         seq = torch.from_numpy(np.array(seq))
         pos = torch.from_numpy(np.array(pos))
         neg = torch.from_numpy(np.array(neg))
+        aug_seq_1 = torch.from_numpy(np.array(aug_seq_1))
+        aug_seq_2 = torch.from_numpy(np.array(aug_seq_2))
         token_type = torch.from_numpy(np.array(token_type))
         next_token_type = torch.from_numpy(np.array(next_token_type))
         next_action_type = torch.from_numpy(np.array(next_action_type))
         seq_feat = list(seq_feat)
         pos_feat = list(pos_feat)
         neg_feat = list(neg_feat)
-        return seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat
+        return seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat, aug_seq_1, aug_seq_2
 
 
 class MyTestDataset(MyDataset):
