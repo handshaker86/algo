@@ -334,6 +334,25 @@ class BaselineModel(torch.nn.Module):
         poss = torch.arange(1, maxlen + 1, device=self.dev).unsqueeze(0).expand(batch_size, -1).clone()
         poss *= log_seqs != 0
         seqs += self.pos_emb(poss)
+
+        # 3. 时间 embedding（在 attention 前加）
+        time_stamp = time_stamp.float()
+        valid_mask = (time_stamp > 0)
+
+        # 当前时间（忽略 padding 位）
+        masked_time_stamp = time_stamp * valid_mask.float()
+        current_time = torch.max(masked_time_stamp, dim=1, keepdim=True)[0]  # [batch, 1]
+
+        # delta t（秒 -> 天）
+        delta_t = (current_time - time_stamp) / (24 * 3600)  # [batch, maxlen]
+        delta_t = torch.log1p(delta_t)
+
+        # 时间 MLP
+        time_feats = self.time_mlp(delta_t.unsqueeze(-1))  # [batch, maxlen, d_model]
+        time_feats = time_feats * valid_mask.unsqueeze(-1).float()
+
+        seqs += time_feats  # 合并时间特征
+
         seqs = self.emb_dropout(seqs)
 
         maxlen = seqs.shape[1]
@@ -354,27 +373,49 @@ class BaselineModel(torch.nn.Module):
                 seqs = self.forward_layernorms[i](seqs + self.forward_layers[i](seqs))
 
         # 加入时间特征
-        time_stamp = time_stamp.float()
-        current_time = torch.max(time_stamp, dim=1, keepdim=True)[0]  # [batch, 1]
-        delta_t = current_time - time_stamp  # [batch, maxlen] positive
-        delta_t = delta_t / (24*3600)        # sec -> day 
-        time_feats = self.time_mlp(delta_t.unsqueeze(-1))            # [batch, maxlen, d_model]
-        seqs += time_feats
+        # time_stamp = time_stamp.float()
+        # valid_mask = (time_stamp > 0)
+        # current_time = torch.max(time_stamp, dim=1, keepdim=True)[0]  # [batch, 1]
+        # delta_t = current_time - time_stamp  # [batch, maxlen] positive
+        # # delta_t = (delta_t + 1) / (24*3600)        # sec -> day 
+        # delta_t = torch.log1p(delta_t+1) # log(1 + delta_t)
+        # time_feats = self.time_mlp(delta_t.unsqueeze(-1)) 
+        # time_feats = time_feats * valid_mask.unsqueeze(-1).float()           # [batch, maxlen, d_model]
+        # seqs += time_feats
 
         log_feats = self.last_layernorm(seqs)
 
         return log_feats
     
+    # def compute_infonce_loss(self, seq_embs, pos_embs, neg_embs, loss_mask):
+    #     hidden_size = neg_embs.size(-1)
+    #     seq_embs = seq_embs / seq_embs.norm(dim=-1, keepdim=True)
+    #     pos_embs = pos_embs / pos_embs.norm(dim=-1, keepdim=True)
+    #     neg_embs = neg_embs / neg_embs.norm(dim=-1, keepdim=True)
+    #     pos_logits = F.cosine_similarity(seq_embs, pos_embs, dim=-1).unsqueeze(-1)
+    #     neg_embedding_all = neg_embs.reshape(-1, hidden_size)
+    #     neg_logits = torch.matmul(seq_embs, neg_embedding_all.transpose(-1, -2))
+    #     logits = torch.cat([pos_logits, neg_logits], dim=-1)
+    #     logits = logits[loss_mask.bool()] / self.temp
+    #     labels = torch.zeros(logits.size(0), device=logits.device, dtype=torch.int64)
+    #     loss = F.cross_entropy(logits, labels)
+
+    #     return loss
     def compute_infonce_loss(self, seq_embs, pos_embs, neg_embs, loss_mask):
+        eps = 1e-8
         hidden_size = neg_embs.size(-1)
-        seq_embs = seq_embs / seq_embs.norm(dim=-1, keepdim=True)
-        pos_embs = pos_embs / pos_embs.norm(dim=-1, keepdim=True)
-        neg_embs = neg_embs / neg_embs.norm(dim=-1, keepdim=True)
+        # L2 normalize with eps
+        seq_embs = seq_embs / (seq_embs.norm(dim=-1, keepdim=True) + eps)
+        pos_embs = pos_embs / (pos_embs.norm(dim=-1, keepdim=True) + eps)
+        neg_embs = neg_embs / (neg_embs.norm(dim=-1, keepdim=True) + eps)
         pos_logits = F.cosine_similarity(seq_embs, pos_embs, dim=-1).unsqueeze(-1)
         neg_embedding_all = neg_embs.reshape(-1, hidden_size)
         neg_logits = torch.matmul(seq_embs, neg_embedding_all.transpose(-1, -2))
         logits = torch.cat([pos_logits, neg_logits], dim=-1)
         logits = logits[loss_mask.bool()] / self.temp
+        if logits.numel() == 0:
+            return torch.tensor(0.0, device=logits.device, requires_grad=True)
+        # logits = logits - logits.max(dim=-1, keepdim=True).values
         labels = torch.zeros(logits.size(0), device=logits.device, dtype=torch.int64)
         loss = F.cross_entropy(logits, labels)
 

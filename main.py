@@ -174,7 +174,7 @@ if __name__ == '__main__':
 
     # 参数分组
     optimizer_grouped_parameters = [
-        {"params": decay_params, "weight_decay": 1e-6},
+        {"params": decay_params, "weight_decay": 1e-5},
         {"params": no_decay_params, "weight_decay": 0.0},
     ]
 
@@ -237,7 +237,20 @@ if __name__ == '__main__':
             # print(log_json)
 
             # writer.add_scalar('Loss/train', loss.item(), global_step)
+            if (torch.isnan(infonce_loss) or torch.isinf(infonce_loss)) and not(torch.isnan(triplet_loss) or torch.isinf(triplet_loss)):
+                print("InfoNCE exploded! And triplet loss is fine.")
+                exit()
 
+            if (torch.isnan(triplet_loss) or torch.isinf(triplet_loss)) and not(torch.isnan(infonce_loss) or torch.isinf(infonce_loss)):
+                print("Triplet exploded! And InfoNCE loss is fine.")
+                exit()
+
+            if (torch.isnan(infonce_loss) or torch.isinf(infonce_loss)) and (torch.isnan(triplet_loss) or torch.isinf(triplet_loss)):
+                for name, param in model.named_parameters():
+                    if param.grad is not None and torch.isnan(param.grad).any():
+                        print(f"First NaN grad in {name}")
+                        exit()
+            
 
             writer.add_scalar('Loss/train_infonce', infonce_loss.item(), global_step)
             writer.add_scalar('Loss/train_triplet', triplet_loss.item(), global_step)
@@ -283,6 +296,7 @@ if __name__ == '__main__':
             print(log_json)
             
             writer.add_scalar('LR', current_lr, global_step)
+            writer.add_scalar('GradNorm/before', grad_norm_before, global_step)
             
             optimizer.step() 
             # 这里调用学习率调度器step，完成warmup
