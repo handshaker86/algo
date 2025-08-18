@@ -282,6 +282,7 @@ if __name__ == '__main__':
             writer.add_scalar('Loss/train_infonce', infonce_loss.item(), global_step)
             writer.add_scalar('Loss/train_triplet', triplet_loss.item(), global_step)
             writer.add_scalar('Loss/train_total', loss.item(), global_step)
+            writer.add_scalar('Loss/train_contrasive', cl_loss.item(), global_step)
             writer.add_scalar('LR', current_lr, global_step)
             global_step += 1
 
