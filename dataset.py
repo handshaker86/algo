@@ -94,6 +94,56 @@ class MyDataset(torch.utils.data.Dataset):
             t = np.random.randint(l, r)
         return t
 
+    def _feat_list_to_tensor_dict(self, feat_list_of_dict, maxlen):
+        """
+        将特征字典列表转换为特征Tensor字典.
+        将原model中的feat2tensor逻辑移到此处.
+        """
+        # 初始化一个字典来存储最终的特征张量
+        tensor_dict = {}
+
+        # 收集所有存在的特征键
+        all_keys = set()
+        for feat_dict in feat_list_of_dict:
+            if feat_dict:
+                all_keys.update(feat_dict.keys())
+        
+        # 为每个特征键创建tensor
+        for k in all_keys:
+            # 判断特征类型并处理
+            if k in self.feature_types['item_array'] or k in self.feature_types['user_array']:
+                # array 类型
+                max_array_len = 0
+                for item_feat in feat_list_of_dict:
+                    if item_feat and k in item_feat:
+                        max_array_len = max(max_array_len, len(item_feat[k]))
+                
+                batch_data = np.zeros((maxlen, max_array_len), dtype=np.int64)
+                for i, item_feat in enumerate(feat_list_of_dict):
+                    if item_feat and k in item_feat:
+                        item_data = item_feat[k]
+                        actual_len = min(len(item_data), max_array_len)
+                        batch_data[i, :actual_len] = item_data[:actual_len]
+                tensor_dict[k] = torch.from_numpy(batch_data)
+
+            elif k in self.feature_types['item_emb']:
+                # emb 类型
+                emb_dim = list(self.mm_emb_dict[k].values())[0].shape[0]
+                batch_emb_data = np.zeros((maxlen, emb_dim), dtype=np.float32)
+                for i, item_feat in enumerate(feat_list_of_dict):
+                    if item_feat and k in item_feat:
+                        batch_emb_data[i] = item_feat[k]
+                tensor_dict[k] = torch.from_numpy(batch_emb_data)
+
+            else: # sparse or continual
+                batch_data = np.zeros(maxlen, dtype=np.int64 if 'sparse' in self.feature_types else np.float32)
+                for i, item_feat in enumerate(feat_list_of_dict):
+                    if item_feat and k in item_feat:
+                        batch_data[i] = item_feat[k]
+                tensor_dict[k] = torch.from_numpy(batch_data)
+
+        return tensor_dict
+
     def __getitem__(self, uid):
         """
         获取单个用户的数据，并进行padding处理，生成模型需要的数据格式
@@ -128,9 +178,9 @@ class MyDataset(torch.utils.data.Dataset):
         next_token_type = np.zeros([self.maxlen + 1], dtype=np.int32)
         next_action_type = np.zeros([self.maxlen + 1], dtype=np.int32)
 
-        seq_feat = np.empty([self.maxlen + 1], dtype=object)
-        pos_feat = np.empty([self.maxlen + 1], dtype=object)
-        neg_feat = np.empty([self.maxlen + 1], dtype=object)
+        seq_feat_list = [None] * (self.maxlen + 1)
+        pos_feat_list = [None] * (self.maxlen + 1)
+        neg_feat_list = [None] * (self.maxlen + 1)
 
         nxt = ext_user_sequence[-1]
         idx = self.maxlen
@@ -151,23 +201,25 @@ class MyDataset(torch.utils.data.Dataset):
             next_token_type[idx] = next_type
             if next_act_type is not None:
                 next_action_type[idx] = next_act_type
-            seq_feat[idx] = feat
+            seq_feat_list[idx] = feat
             if next_type == 1 and next_i != 0:
                 pos[idx] = next_i
-                pos_feat[idx] = next_feat
+                pos_feat_list[idx] = next_feat
                 neg_id = self._random_neq(1, self.itemnum + 1, ts)
                 neg[idx] = neg_id
-                neg_feat[idx] = self.fill_missing_feat(self.item_feat_dict[str(neg_id)], neg_id)
+                neg_feat_list[idx] = self.fill_missing_feat(self.item_feat_dict[str(neg_id)], neg_id)
+
             nxt = record_tuple
             idx -= 1
             if idx == -1:
                 break
 
-        seq_feat = np.where(seq_feat == None, self.feature_default_value, seq_feat)
-        pos_feat = np.where(pos_feat == None, self.feature_default_value, pos_feat)
-        neg_feat = np.where(neg_feat == None, self.feature_default_value, neg_feat)
+        # 将特征列表转换为Tensor字典
+        seq_feat_tensors = self._feat_list_to_tensor_dict(seq_feat_list, self.maxlen + 1)
+        pos_feat_tensors = self._feat_list_to_tensor_dict(pos_feat_list, self.maxlen + 1)
+        neg_feat_tensors = self._feat_list_to_tensor_dict(neg_feat_list, self.maxlen + 1)
 
-        return seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat
+        return (torch.from_numpy(seq), torch.from_numpy(pos), torch.from_numpy(neg),torch.from_numpy(token_type), torch.from_numpy(next_token_type),torch.from_numpy(next_action_type),seq_feat_tensors, pos_feat_tensors, neg_feat_tensors)
 
     def __len__(self):
         """
@@ -266,6 +318,18 @@ class MyDataset(torch.utils.data.Dataset):
         return filled_feat
 
     @staticmethod
+    # Collate the feature dictionaries
+    def collate_feat_dicts(feat_dicts_tuple):
+        collated = {}
+        if not feat_dicts_tuple or not feat_dicts_tuple[0]:
+            return collated
+
+        all_keys = feat_dicts_tuple[0].keys()
+        for key in all_keys:
+            collated[key] = torch.stack([d[key] for d in feat_dicts_tuple])
+        return collated
+
+    @staticmethod
     def collate_fn(batch):
         """
         Args:
@@ -281,16 +345,18 @@ class MyDataset(torch.utils.data.Dataset):
             pos_feat: 正样本特征, list形式
             neg_feat: 负样本特征, list形式
         """
-        seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat = zip(*batch)
-        seq = torch.from_numpy(np.array(seq))
-        pos = torch.from_numpy(np.array(pos))
-        neg = torch.from_numpy(np.array(neg))
-        token_type = torch.from_numpy(np.array(token_type))
-        next_token_type = torch.from_numpy(np.array(next_token_type))
-        next_action_type = torch.from_numpy(np.array(next_action_type))
-        seq_feat = list(seq_feat)
-        pos_feat = list(pos_feat)
-        neg_feat = list(neg_feat)
+        seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat_list, pos_feat_list, neg_feat_list = zip(*batch)
+        seq = torch.stack(seq)
+        pos = torch.stack(pos)
+        neg = torch.stack(neg)
+        token_type = torch.stack(token_type)
+        next_token_type = torch.stack(next_token_type)
+        next_action_type = torch.stack(next_action_type)
+
+        seq_feat = MyDataset.collate_feat_dicts(seq_feat_list)
+        pos_feat = MyDataset.collate_feat_dicts(pos_feat_list)
+        neg_feat = MyDataset.collate_feat_dicts(neg_feat_list)
+
         return seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat
 
 
@@ -366,29 +432,24 @@ class MyTestDataset(MyDataset):
 
         seq = np.zeros([self.maxlen + 1], dtype=np.int32)
         token_type = np.zeros([self.maxlen + 1], dtype=np.int32)
-        seq_feat = np.empty([self.maxlen + 1], dtype=object)
+        seq_feat_list = [None] * (self.maxlen + 1)
 
         idx = self.maxlen
-
-        ts = set()
-        for record_tuple in ext_user_sequence:
-            if record_tuple[2] == 1 and record_tuple[0]:
-                ts.add(record_tuple[0])
 
         for record_tuple in reversed(ext_user_sequence[:-1]):
             i, feat, type_ = record_tuple
             feat = self.fill_missing_feat(feat, i)
             seq[idx] = i
             token_type[idx] = type_
-            seq_feat[idx] = feat
+            seq_feat_list[idx] = feat
             idx -= 1
             if idx == -1:
                 break
 
-        seq_feat = np.where(seq_feat == None, self.feature_default_value, seq_feat)
+        seq_feat_tensors = self._feat_list_to_tensor_dict(seq_feat_list, self.maxlen + 1)
 
-        return seq, token_type, seq_feat, user_id
-
+        return torch.from_numpy(seq), torch.from_numpy(token_type), seq_feat_tensors, user_id
+    
     def __len__(self):
         """
         Returns:
@@ -413,9 +474,11 @@ class MyTestDataset(MyDataset):
             user_id: user_id, str
         """
         seq, token_type, seq_feat, user_id = zip(*batch)
-        seq = torch.from_numpy(np.array(seq))
-        token_type = torch.from_numpy(np.array(token_type))
-        seq_feat = list(seq_feat)
+        seq = torch.stack(seq)
+        token_type = torch.stack(token_type)
+        user_id = list(user_id)  
+
+        seq_feat = MyDataset.collate_feat_dicts(seq_feat)
 
         return seq, token_type, seq_feat, user_id
 

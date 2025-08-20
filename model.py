@@ -187,59 +187,22 @@ class BaselineModel(torch.nn.Module):
         EMB_SHAPE_DICT = {"81": 32, "82": 1024, "83": 3584, "84": 4096, "85": 3584, "86": 3584}
         self.ITEM_EMB_FEAT = {k: EMB_SHAPE_DICT[k] for k in feat_types['item_emb']}  # 记录的是不同多模态特征的维度
 
-    def feat2tensor(self, seq_feature, k):
+    def feat2emb(self, seq, feature_tensors, mask=None, include_user=False):
         """
         Args:
-            seq_feature: 序列特征list，每个元素为当前时刻的特征字典，形状为 [batch_size, maxlen]
-            k: 特征ID
-
-        Returns:
-            batch_data: 特征值的tensor，形状为 [batch_size, maxlen, max_array_len(if array)]
-        """
-        batch_size = len(seq_feature)
-
-        if k in self.ITEM_ARRAY_FEAT or k in self.USER_ARRAY_FEAT:
-            # 如果特征是Array类型，需要先对array进行padding，然后转换为tensor
-            max_array_len = 0
-            max_seq_len = 0
-
-            for i in range(batch_size):
-                seq_data = [item[k] for item in seq_feature[i]]
-                max_seq_len = max(max_seq_len, len(seq_data))
-                max_array_len = max(max_array_len, max(len(item_data) for item_data in seq_data))
-
-            batch_data = np.zeros((batch_size, max_seq_len, max_array_len), dtype=np.int64)
-            for i in range(batch_size):
-                seq_data = [item[k] for item in seq_feature[i]]
-                for j, item_data in enumerate(seq_data):
-                    actual_len = min(len(item_data), max_array_len)
-                    batch_data[i, j, :actual_len] = item_data[:actual_len]
-
-            return torch.from_numpy(batch_data).to(self.dev)
-        else:
-            # 如果特征是Sparse类型，直接转换为tensor
-            max_seq_len = max(len(seq_feature[i]) for i in range(batch_size))
-            batch_data = np.zeros((batch_size, max_seq_len), dtype=np.int64)
-
-            for i in range(batch_size):
-                seq_data = [item[k] for item in seq_feature[i]]
-                batch_data[i] = seq_data
-
-            return torch.from_numpy(batch_data).to(self.dev)
-
-    def feat2emb(self, seq, feature_array, mask=None, include_user=False):
-        """
-        Args:
-            seq: 序列ID
-            feature_array: 特征list，每个元素为当前时刻的特征字典
+            seq: 序列ID [B, L]
+            feature_tensors: 特征Tensor字典, key是特征ID, value是特征Tensor
             mask: 掩码，1表示item，2表示user
-            include_user: 是否处理用户特征，在两种情况下不打开：1) 训练时在转换正负样本的特征时（因为正负样本都是item）;2) 生成候选库item embedding时。
+            include_user: 是否处理用户特征
 
         Returns:
             seqs_emb: 序列特征的Embedding
         """
         seq = seq.to(self.dev)
-        # pre-compute embedding
+        # 将所有特征tensor移动到正确的设备
+        for k, v in feature_tensors.items():
+            feature_tensors[k] = v.to(self.dev)
+
         if include_user:
             user_mask = (mask == 2).to(self.dev)
             item_mask = (mask == 1).to(self.dev)
@@ -251,56 +214,39 @@ class BaselineModel(torch.nn.Module):
             item_embedding = self.item_emb(seq)
             item_feat_list = [item_embedding]
 
-        # batch-process all feature types
-        all_feat_types = [
-            (self.ITEM_SPARSE_FEAT, 'item_sparse', item_feat_list),
-            (self.ITEM_ARRAY_FEAT, 'item_array', item_feat_list),
-            (self.ITEM_CONTINUAL_FEAT, 'item_continual', item_feat_list),
-        ]
-
+        # 处理稀疏特征
+        for k in self.ITEM_SPARSE_FEAT:
+            if k in feature_tensors:
+                item_feat_list.append(self.sparse_emb[k](feature_tensors[k]))
         if include_user:
-            all_feat_types.extend(
-                [
-                    (self.USER_SPARSE_FEAT, 'user_sparse', user_feat_list),
-                    (self.USER_ARRAY_FEAT, 'user_array', user_feat_list),
-                    (self.USER_CONTINUAL_FEAT, 'user_continual', user_feat_list),
-                ]
-            )
+            for k in self.USER_SPARSE_FEAT:
+                if k in feature_tensors:
+                    user_feat_list.append(self.sparse_emb[k](feature_tensors[k]))
+        
+        # 处理数组特征
+        for k in self.ITEM_ARRAY_FEAT:
+             if k in feature_tensors:
+                item_feat_list.append(self.sparse_emb[k](feature_tensors[k]).sum(2))
+        if include_user:
+            for k in self.USER_ARRAY_FEAT:
+                if k in feature_tensors:
+                    user_feat_list.append(self.sparse_emb[k](feature_tensors[k]).sum(2))
 
-        # batch-process each feature type
-        for feat_dict, feat_type, feat_list in all_feat_types:
-            if not feat_dict:
-                continue
+        # 处理连续特征
+        for k in self.ITEM_CONTINUAL_FEAT:
+            if k in feature_tensors:
+                item_feat_list.append(feature_tensors[k].unsqueeze(2))
+        if include_user:
+            for k in self.USER_CONTINUAL_FEAT:
+                if k in feature_tensors:
+                    user_feat_list.append(feature_tensors[k].unsqueeze(2))
 
-            for k in feat_dict:
-                tensor_feature = self.feat2tensor(feature_array, k)
-
-                if feat_type.endswith('sparse'):
-                    feat_list.append(self.sparse_emb[k](tensor_feature))
-                elif feat_type.endswith('array'):
-                    feat_list.append(self.sparse_emb[k](tensor_feature).sum(2))
-                elif feat_type.endswith('continual'):
-                    feat_list.append(tensor_feature.unsqueeze(2))
-
+        # 处理多模态Emb特征
         for k in self.ITEM_EMB_FEAT:
-            # collect all data to numpy, then batch-convert
-            batch_size = len(feature_array)
-            emb_dim = self.ITEM_EMB_FEAT[k]
-            seq_len = len(feature_array[0])
+            if k in feature_tensors:
+                item_feat_list.append(self.emb_transform[k](feature_tensors[k]))
 
-            # pre-allocate tensor
-            batch_emb_data = np.zeros((batch_size, seq_len, emb_dim), dtype=np.float32)
-
-            for i, seq in enumerate(feature_array):
-                for j, item in enumerate(seq):
-                    if k in item:
-                        batch_emb_data[i, j] = item[k]
-
-            # batch-convert and transfer to GPU
-            tensor_feature = torch.from_numpy(batch_emb_data).to(self.dev)
-            item_feat_list.append(self.emb_transform[k](tensor_feature))
-
-        # merge features
+        # 合并特征
         all_item_emb = torch.cat(item_feat_list, dim=2)
         all_item_emb = torch.relu(self.itemdnn(all_item_emb))
         if include_user:
