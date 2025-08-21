@@ -6,4 +6,4 @@ echo ${RUNTIME_SCRIPT_DIR}
 cd ${RUNTIME_SCRIPT_DIR}
 
 # write your code below
-python -u main.py --hidden_units 64  --num_blocks 4 --num_heads 4 --lr 0.001
+python -u main.py --hidden_units 128  --num_blocks 8 --num_heads 4 --lr 0.001 --norm_first --dropout_rate 0.5
