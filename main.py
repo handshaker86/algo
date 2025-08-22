@@ -37,7 +37,6 @@ def get_args():
     args = parser.parse_args()
     return args
 
-# ... (other helper functions like inbatch_loss, get_grad_norm remain the same)
 def get_grad_norm(model, norm_type=2):
     total_norm = 0.0
     for p in model.parameters():
@@ -79,7 +78,7 @@ if __name__ == '__main__':
         train_dataset, 
         batch_size=args.batch_size, 
         shuffle=True, 
-        num_workers=4, # 可以设置大于0的num_workers
+        num_workers=8, # 可以设置大于0的num_workers
         collate_fn=dataset.collate_fn,
         pin_memory=True 
     )
@@ -87,7 +86,7 @@ if __name__ == '__main__':
         valid_dataset, 
         batch_size=args.batch_size, 
         shuffle=False, 
-        num_workers=4, 
+        num_workers=8, 
         collate_fn=dataset.collate_fn,
         pin_memory=True
     )
@@ -97,7 +96,10 @@ if __name__ == '__main__':
 
     model = BaselineModel(usernum, itemnum, feat_statistics, feat_types, args).to(args.device)
 
-    # ... (模型初始化代码不变)
+    if hasattr(torch, 'compile'):
+        print("Compiling the model...")
+        model = torch.compile(model)
+
     for name, param in model.named_parameters():
         try:
             torch.nn.init.xavier_normal_(param.data)
