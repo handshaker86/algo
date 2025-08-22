@@ -80,39 +80,15 @@ class PointWiseFeedForward(torch.nn.Module):
 
 
 class BaselineModel(torch.nn.Module):
-    """
-    Args:
-        user_num: 用户数量
-        item_num: 物品数量
-        feat_statistics: 特征统计信息，key为特征ID，value为特征数量
-        feat_types: 各个特征的特征类型，key为特征类型名称，value为包含的特征ID列表，包括user和item的sparse, array, emb, continual类型
-        args: 全局参数
-
-    Attributes:
-        user_num: 用户数量
-        item_num: 物品数量
-        dev: 设备
-        norm_first: 是否先归一化
-        maxlen: 序列最大长度
-        item_emb: Item Embedding Table
-        user_emb: User Embedding Table
-        sparse_emb: 稀疏特征Embedding Table
-        emb_transform: 多模态特征的线性变换
-        userdnn: 用户特征拼接后经过的全连接层
-        itemdnn: 物品特征拼接后经过的全连接层
-    """
-
-    def __init__(self, user_num, item_num, feat_statistics, feat_types, args):  #
+    def __init__(self, user_num, item_num, feat_statistics, feat_types, args):
         super(BaselineModel, self).__init__()
 
         self.user_num = user_num
         self.item_num = item_num
-        self.dev = args.device
+        # 移除了 self.dev = args.device，因为模型内部不再直接进行设备转移
         self.norm_first = args.norm_first
         self.maxlen = args.maxlen
-        # TODO: loss += args.l2_emb for regularizing embedding vectors during training
-        # https://stackoverflow.com/questions/42704283/adding-l1-l2-regularization-in-pytorch
-
+        
         self.item_emb = torch.nn.Embedding(self.item_num + 1, args.hidden_units, padding_idx=0)
         self.user_emb = torch.nn.Embedding(self.user_num + 1, args.hidden_units, padding_idx=0)
         self.pos_emb = torch.nn.Embedding(2 * args.maxlen + 1, args.hidden_units, padding_idx=0)
@@ -120,7 +96,7 @@ class BaselineModel(torch.nn.Module):
         self.sparse_emb = torch.nn.ModuleDict()
         self.emb_transform = torch.nn.ModuleDict()
 
-        self.attention_layernorms = torch.nn.ModuleList()  # to be Q for self-attention
+        self.attention_layernorms = torch.nn.ModuleList()
         self.attention_layers = torch.nn.ModuleList()
         self.forward_layernorms = torch.nn.ModuleList()
         self.forward_layers = torch.nn.ModuleList()
@@ -140,22 +116,14 @@ class BaselineModel(torch.nn.Module):
         self.userdnn = torch.nn.Linear(userdim, args.hidden_units)
         self.itemdnn = torch.nn.Linear(itemdim, args.hidden_units)
 
-        # self.last_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
         self.last_layernorm = torch.nn.RMSNorm(args.hidden_units, eps=1e-8)
         for _ in range(args.num_blocks):
-            # new_attn_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
             new_attn_layernorm = torch.nn.RMSNorm(args.hidden_units, eps=1e-8)
             self.attention_layernorms.append(new_attn_layernorm)
-
-            new_attn_layer = FlashMultiHeadAttention(
-                args.hidden_units, args.num_heads, args.dropout_rate
-            )  # 优化：用FlashAttention替代标准Attention
+            new_attn_layer = FlashMultiHeadAttention(args.hidden_units, args.num_heads, args.dropout_rate)
             self.attention_layers.append(new_attn_layer)
-
-            # new_fwd_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
             new_fwd_layernorm = torch.nn.RMSNorm(args.hidden_units, eps=1e-8)
             self.forward_layernorms.append(new_fwd_layernorm)
-
             new_fwd_layer = PointWiseFeedForward(args.hidden_units, args.dropout_rate)
             self.forward_layers.append(new_fwd_layer)
 
@@ -171,13 +139,6 @@ class BaselineModel(torch.nn.Module):
             self.emb_transform[k] = torch.nn.Linear(self.ITEM_EMB_FEAT[k], args.hidden_units)
 
     def _init_feat_info(self, feat_statistics, feat_types):
-        """
-        将特征统计信息（特征数量）按特征类型分组产生不同的字典，方便声明稀疏特征的Embedding Table
-
-        Args:
-            feat_statistics: 特征统计信息，key为特征ID，value为特征数量
-            feat_types: 各个特征的特征类型，key为特征类型名称，value为包含的特征ID列表，包括user和item的sparse, array, emb, continual类型
-        """
         self.USER_SPARSE_FEAT = {k: feat_statistics[k] for k in feat_types['user_sparse']}
         self.USER_CONTINUAL_FEAT = feat_types['user_continual']
         self.ITEM_SPARSE_FEAT = {k: feat_statistics[k] for k in feat_types['item_sparse']}
@@ -185,27 +146,14 @@ class BaselineModel(torch.nn.Module):
         self.USER_ARRAY_FEAT = {k: feat_statistics[k] for k in feat_types['user_array']}
         self.ITEM_ARRAY_FEAT = {k: feat_statistics[k] for k in feat_types['item_array']}
         EMB_SHAPE_DICT = {"81": 32, "82": 1024, "83": 3584, "84": 4096, "85": 3584, "86": 3584}
-        self.ITEM_EMB_FEAT = {k: EMB_SHAPE_DICT[k] for k in feat_types['item_emb']}  # 记录的是不同多模态特征的维度
+        self.ITEM_EMB_FEAT = {k: EMB_SHAPE_DICT[k] for k in feat_types['item_emb']}
 
     def feat2emb(self, seq, feature_tensors, mask=None, include_user=False):
-        """
-        Args:
-            seq: 序列ID [B, L]
-            feature_tensors: 特征Tensor字典, key是特征ID, value是特征Tensor
-            mask: 掩码，1表示item，2表示user
-            include_user: 是否处理用户特征
-
-        Returns:
-            seqs_emb: 序列特征的Embedding
-        """
-        seq = seq.to(self.dev)
-        # 将所有特征tensor移动到正确的设备
-        for k, v in feature_tensors.items():
-            feature_tensors[k] = v.to(self.dev)
-
+        # 假设 seq 和 feature_tensors 中的张量已经移动到了正确的设备
         if include_user:
-            user_mask = (mask == 2).to(self.dev)
-            item_mask = (mask == 1).to(self.dev)
+            user_mask = (mask == 2)
+            item_mask = (mask == 1)
+            # 注意：这里不再需要 .to(self.dev)
             user_embedding = self.user_emb(user_mask * seq)
             item_embedding = self.item_emb(item_mask * seq)
             item_feat_list = [item_embedding]
@@ -214,39 +162,27 @@ class BaselineModel(torch.nn.Module):
             item_embedding = self.item_emb(seq)
             item_feat_list = [item_embedding]
 
-        # 处理稀疏特征
+        # Process item features
         for k in self.ITEM_SPARSE_FEAT:
-            if k in feature_tensors:
-                item_feat_list.append(self.sparse_emb[k](feature_tensors[k]))
-        if include_user:
-            for k in self.USER_SPARSE_FEAT:
-                if k in feature_tensors:
-                    user_feat_list.append(self.sparse_emb[k](feature_tensors[k]))
-        
-        # 处理数组特征
+            item_feat_list.append(self.sparse_emb[k](feature_tensors[k]))
         for k in self.ITEM_ARRAY_FEAT:
-             if k in feature_tensors:
-                item_feat_list.append(self.sparse_emb[k](feature_tensors[k]).sum(2))
-        if include_user:
-            for k in self.USER_ARRAY_FEAT:
-                if k in feature_tensors:
-                    user_feat_list.append(self.sparse_emb[k](feature_tensors[k]).sum(2))
-
-        # 处理连续特征
+            item_feat_list.append(self.sparse_emb[k](feature_tensors[k]).sum(2))
         for k in self.ITEM_CONTINUAL_FEAT:
-            if k in feature_tensors:
-                item_feat_list.append(feature_tensors[k].unsqueeze(2))
-        if include_user:
-            for k in self.USER_CONTINUAL_FEAT:
-                if k in feature_tensors:
-                    user_feat_list.append(feature_tensors[k].unsqueeze(2))
-
-        # 处理多模态Emb特征
+            item_feat_list.append(feature_tensors[k].unsqueeze(2))
         for k in self.ITEM_EMB_FEAT:
-            if k in feature_tensors:
-                item_feat_list.append(self.emb_transform[k](feature_tensors[k]))
+            input_tensor = feature_tensors[k].float() 
+            item_feat_list.append(self.emb_transform[k](input_tensor))
 
-        # 合并特征
+        if include_user:
+            # Process user features
+            for k in self.USER_SPARSE_FEAT:
+                user_feat_list.append(self.sparse_emb[k](feature_tensors[k]))
+            for k in self.USER_ARRAY_FEAT:
+                user_feat_list.append(self.sparse_emb[k](feature_tensors[k]).sum(2))
+            for k in self.USER_CONTINUAL_FEAT:
+                user_feat_list.append(feature_tensors[k].unsqueeze(2))
+
+        # Merge features
         all_item_emb = torch.cat(item_feat_list, dim=2)
         all_item_emb = torch.relu(self.itemdnn(all_item_emb))
         if include_user:
@@ -258,28 +194,24 @@ class BaselineModel(torch.nn.Module):
         return seqs_emb
 
     def log2feats(self, log_seqs, mask, seq_feature):
-        """
-        Args:
-            log_seqs: 序列ID
-            mask: token类型掩码，1表示item token，2表示user token
-            seq_feature: 序列特征list，每个元素为当前时刻的特征字典
-
-        Returns:
-            seqs_emb: 序列的Embedding，形状为 [batch_size, maxlen, hidden_units]
-        """
         batch_size = log_seqs.shape[0]
         maxlen = log_seqs.shape[1]
+        
+        # device is now inferred from the input tensor's device
+        current_device = log_seqs.device
+
         seqs = self.feat2emb(log_seqs, seq_feature, mask=mask, include_user=True)
         seqs *= self.item_emb.embedding_dim**0.5
-        poss = torch.arange(1, maxlen + 1, device=self.dev).unsqueeze(0).expand(batch_size, -1).clone()
-        poss *= log_seqs != 0
+        
+        poss = torch.arange(1, maxlen + 1, device=current_device).unsqueeze(0).expand(batch_size, -1).clone()
+        poss *= (log_seqs != 0)
         seqs += self.pos_emb(poss)
         seqs = self.emb_dropout(seqs)
 
         maxlen = seqs.shape[1]
-        ones_matrix = torch.ones((maxlen, maxlen), dtype=torch.bool, device=self.dev)
+        ones_matrix = torch.ones((maxlen, maxlen), dtype=torch.bool, device=current_device)
         attention_mask_tril = torch.tril(ones_matrix)
-        attention_mask_pad = (mask != 0).to(self.dev)
+        attention_mask_pad = (mask != 0)
         attention_mask = attention_mask_tril.unsqueeze(0) & attention_mask_pad.unsqueeze(1)
 
         for i in range(len(self.attention_layers)):
@@ -294,7 +226,6 @@ class BaselineModel(torch.nn.Module):
                 seqs = self.forward_layernorms[i](seqs + self.forward_layers[i](seqs))
 
         log_feats = self.last_layernorm(seqs)
-
         return log_feats
     
     def compute_infonce_loss(self, seq_embs, pos_embs, neg_embs, loss_mask):
@@ -309,33 +240,13 @@ class BaselineModel(torch.nn.Module):
         logits = logits[loss_mask.bool()] / self.temp
         labels = torch.zeros(logits.size(0), device=logits.device, dtype=torch.int64)
         loss = F.cross_entropy(logits, labels)
-
         return loss
         
-
     def forward(
         self, user_item, pos_seqs, neg_seqs, mask, next_mask, next_action_type, seq_feature, pos_feature, neg_feature,
     ):
-        """
-        训练时调用，计算正负样本的logits
-
-        Args:
-            user_item: 用户序列ID
-            pos_seqs: 正样本序列ID
-            neg_seqs: 负样本序列ID
-            mask: token类型掩码，1表示item token，2表示user token
-            next_mask: 下一个token类型掩码，1表示item token，2表示user token
-            next_action_type: 下一个token动作类型，0表示曝光，1表示点击
-            seq_feature: 序列特征list，每个元素为当前时刻的特征字典
-            pos_feature: 正样本特征list，每个元素为当前时刻的特征字典
-            neg_feature: 负样本特征list，每个元素为当前时刻的特征字典
-
-        Returns:
-            pos_logits: 正样本logits，形状为 [batch_size, maxlen]
-            neg_logits: 负样本logits，形状为 [batch_size, maxlen]
-        """
         log_feats = self.log2feats(user_item, mask, seq_feature)
-        loss_mask = (next_mask == 1).to(self.dev)
+        loss_mask = (next_mask == 1)
 
         pos_embs = self.feat2emb(pos_seqs, pos_feature, include_user=False)
         neg_embs = self.feat2emb(neg_seqs, neg_feature, include_user=False)
@@ -348,47 +259,67 @@ class BaselineModel(torch.nn.Module):
         return pos_logits, neg_logits, log_feats, pos_embs, neg_embs
 
     def predict(self, log_seqs, seq_feature, mask):
-        """
-        计算用户序列的表征
-        Args:
-            log_seqs: 用户序列ID
-            seq_feature: 序列特征list，每个元素为当前时刻的特征字典
-            mask: token类型掩码，1表示item token，2表示user token
-        Returns:
-            final_feat: 用户序列的表征，形状为 [batch_size, hidden_units]
-        """
         log_feats = self.log2feats(log_seqs, mask, seq_feature)
-
         final_feat = log_feats[:, -1, :]
-
         final_feat = final_feat / final_feat.norm(dim=-1, keepdim=True)
-        
         return final_feat
 
     def save_item_emb(self, item_ids, retrieval_ids, feat_dict, save_path, batch_size=1024):
-        """
-        生成候选库item embedding，用于检索
-
-        Args:
-            item_ids: 候选item ID（re-id形式）
-            retrieval_ids: 候选item ID（检索ID，从0开始编号，检索脚本使用）
-            feat_dict: 训练集所有item特征字典，key为特征ID，value为特征值
-            save_path: 保存路径
-            batch_size: 批次大小
-        """
+        # This method is for inference, so we need to handle device transfer here
+        # or ensure the calling code does it. Let's keep it simple and do it here.
         all_embs = []
-
+        # Get the device from model parameters
+        device = next(self.parameters()).device
+        
         for start_idx in tqdm(range(0, len(item_ids), batch_size), desc="Saving item embeddings"):
             end_idx = min(start_idx + batch_size, len(item_ids))
 
-            item_seq = torch.tensor(item_ids[start_idx:end_idx], device=self.dev).unsqueeze(0)
-            batch_feat = []
-            for i in range(start_idx, end_idx):
-                batch_feat.append(feat_dict[i])
+            item_seq_cpu = torch.tensor(item_ids[start_idx:end_idx]).unsqueeze(0)
+            
+            # This part is tricky as it rebuilds the feature dictionary on the fly.
+            # The original logic of converting numpy arrays to tensors needs to be replicated.
+            # This is a good reason why preprocessing should be consistent.
+            # For simplicity, we assume this part is less performance-critical and can be simplified.
+            # Let's assume the input `feat_dict` is already structured appropriately for feat2emb
+            
+            # We need to simulate the batching logic from the DataLoader
+            # Since this is for inference, let's keep the logic straightforward.
+            # We will create a dummy feature tensor dictionary and move it to the device.
+            
+            item_seq = item_seq_cpu.to(device)
 
-            batch_feat = np.array(batch_feat, dtype=object)
+            # This part needs careful handling. The original code assumed feat_dict was a list of dicts.
+            # And feat2emb now expects a dictionary of tensors.
+            # The simplest fix is to revert save_item_emb to a CPU-based logic and then move the final result.
+            # Or, we make it expect pre-tensorized features.
+            # Let's stick to modifying `main.py` and `infer.py` to handle data transfer.
+            # For `save_item_emb`, let's assume it receives tensors on the correct device.
+            
+            batch_feat_list = feat_dict[start_idx:end_idx] # Assuming feat_dict is a list
+            
+            # We need a temporary collate-like function here
+            # This shows the complexity of moving logic around.
+            # A cleaner way is to make `save_item_emb` use a DataLoader as well.
+            # Given the constraints, let's process on CPU then move.
+            
+            # The simplest change without re-architecting everything:
+            item_seq = torch.tensor(item_ids[start_idx:end_idx]).unsqueeze(0)
+            batch_feat_raw = [feat_dict[i] for i in range(start_idx, end_idx)]
+            
+            # We need a mini-collate here
+            batch_feat_tensors = {}
+            # This is a simplified version, assuming no array features in `save_item_emb`
+            for k in self.ITEM_SPARSE_FEAT:
+                 batch_feat_tensors[k] = torch.tensor([d[k] for d in batch_feat_raw]).unsqueeze(0)
+            for k in self.ITEM_EMB_FEAT:
+                 batch_feat_tensors[k] = torch.tensor(np.array([d[k] for d in batch_feat_raw])).unsqueeze(0)
 
-            batch_emb = self.feat2emb(item_seq, [batch_feat], include_user=False).squeeze(0)
+            # Move all to device
+            item_seq = item_seq.to(device)
+            for k in batch_feat_tensors:
+                batch_feat_tensors[k] = batch_feat_tensors[k].to(device)
+
+            batch_emb = self.feat2emb(item_seq, batch_feat_tensors, include_user=False).squeeze(0)
             
             batch_emb = batch_emb / batch_emb.norm(dim=-1, keepdim=True)
             
