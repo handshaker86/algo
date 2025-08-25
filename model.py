@@ -1,4 +1,3 @@
-# handshaker86/algo/algo-main/model.py
 from pathlib import Path
 
 import numpy as np
@@ -280,12 +279,25 @@ class BaselineModel(torch.nn.Module):
             for i in range(start_idx, end_idx):
                 batch_feat.append(feat_dict[i])
 
-            batch_feat = np.array(batch_feat, dtype=object)
+            # transform batch_feat to dict with tensor values
+            collated_feats = {}
+            feature_keys = batch_feat[0].keys() 
+            for key in feature_keys:
+                values = [d[key] for d in batch_feat]
+                # pad the features
+                if key in self.ITEM_ARRAY_FEAT:
+                    max_len = max(len(v) for v in values if v is not None) if values else 0
+                    padded = np.zeros((len(values), max_len), dtype=np.int64)
+                    for i, v in enumerate(values):
+                        if v is not None:
+                            padded[i, :len(v)] = v
+                    tensor = torch.from_numpy(padded)
+                else:
+                    tensor = torch.from_numpy(np.stack(values))
+                collated_feats[key] = tensor.unsqueeze(0)
 
-            batch_emb = self.feat2emb(item_seq, [batch_feat], include_user=False).squeeze(0)
-            
+            batch_emb = self.feat2emb(item_seq, collated_feats, include_user=False).squeeze(0)
             batch_emb = batch_emb / batch_emb.norm(dim=-1, keepdim=True)
-            
             all_embs.append(batch_emb.detach().cpu().numpy().astype(np.float32))
 
         # 合并所有批次的结果并保存
