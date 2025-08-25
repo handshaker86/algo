@@ -207,19 +207,10 @@ class MyDataset(torch.utils.data.Dataset):
                     filled_feat[feat_id] = emb
 
         return filled_feat
+    
 
     @staticmethod
-    def collate_fn(batch):
-        seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat = zip(*batch)
-
-        seq = torch.from_numpy(np.array(seq))
-        pos = torch.from_numpy(np.array(pos))
-        neg = torch.from_numpy(np.array(neg))
-        token_type = torch.from_numpy(np.array(token_type))
-        next_token_type = torch.from_numpy(np.array(next_token_type))
-        next_action_type = torch.from_numpy(np.array(next_action_type))
-
-        def collate_feats(feat_list):
+    def collate_feats(feat_list):
             collated = {}
             if not feat_list or not feat_list[0]: return collated
             
@@ -250,9 +241,20 @@ class MyDataset(torch.utils.data.Dataset):
                     collated[key] = torch.from_numpy(np.stack(arrays))
             return collated
 
-        seq_feat_collated = collate_feats(seq_feat)
-        pos_feat_collated = collate_feats(pos_feat)
-        neg_feat_collated = collate_feats(neg_feat)
+    @staticmethod
+    def collate_fn(batch):
+        seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat = zip(*batch)
+
+        seq = torch.from_numpy(np.array(seq))
+        pos = torch.from_numpy(np.array(pos))
+        neg = torch.from_numpy(np.array(neg))
+        token_type = torch.from_numpy(np.array(token_type))
+        next_token_type = torch.from_numpy(np.array(next_token_type))
+        next_action_type = torch.from_numpy(np.array(next_action_type))
+
+        seq_feat_collated = MyDataset.collate_feats(seq_feat)
+        pos_feat_collated = MyDataset.collate_feats(pos_feat)
+        neg_feat_collated = MyDataset.collate_feats(neg_feat)
 
         return seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat_collated, pos_feat_collated, neg_feat_collated
 
@@ -319,9 +321,7 @@ class MyTestDataset(MyDataset):
         seq = torch.from_numpy(np.array(seq))
         token_type = torch.from_numpy(np.array(token_type))
         
-        # 提取父类的 collate_feats 辅助函数来处理特征
-        parent_collate_feats_fn = MyDataset.collate_fn.__func__.__closure__[0].cell_contents
-        collated_seq_feat = parent_collate_feats_fn(seq_feat)
+        collated_seq_feat = MyDataset.collate_feats(seq_feat)
 
         return seq, token_type, collated_seq_feat, user_id
 
