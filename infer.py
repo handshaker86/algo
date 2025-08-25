@@ -197,13 +197,12 @@ def get_candidate_emb(indexer, feat_types, feat_default_value, mm_emb_dict, mode
 def infer():
     args = get_args()
     data_path = os.environ.get("EVAL_DATA_PATH")
-    # 假设 MyTestDataset 已经根据训练加速部分进行了修改
     test_dataset = MyTestDataset(data_path, args)
     test_loader = DataLoader(
         test_dataset,
         batch_size=args.batch_size,
         shuffle=False,
-        num_workers=4,  # can use multi-worker now
+        num_workers=4,  
         collate_fn=test_dataset.collate_fn,
     )
     usernum, itemnum = test_dataset.usernum, test_dataset.itemnum
@@ -217,15 +216,18 @@ def infer():
     model.eval()
 
     ckpt_path = get_ckpt_path()
-    model.load_state_dict(torch.load(ckpt_path, map_location=torch.device(args.device)))
+    state_dict = torch.load(ckpt_path, map_location=torch.device(args.device))
+    model.load_state_dict(state_dict)
+
     all_embs = []
     user_list = []
     with torch.no_grad():  # Inference mode
         for step, batch in tqdm(enumerate(test_loader), total=len(test_loader)):
             seq, token_type, seq_feat, user_id = batch
             seq = seq.to(args.device)
-            # 假设predict方法也接受tensorized features
-            # 如果MyTestDataset未修改，这里需要调整
+            token_type = token_type.to(args.device) 
+            for k in seq_feat:
+                seq_feat[k] = seq_feat[k].to(args.device)
             logits = model.predict(seq, seq_feat, token_type)
             all_embs.append(logits.cpu().numpy().astype(np.float32))
             user_list.extend(user_id)
@@ -255,7 +257,7 @@ def infer():
         query_embeddings,
         item_embeddings,
         item_retrieval_ids,
-        top_k=10,  # 在这里设置需要的top-k值
+        top_k=10,  
         device=args.device,
     )
 
