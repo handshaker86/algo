@@ -16,7 +16,6 @@ from model import BaselineModel
 
 def get_args():
     parser = argparse.ArgumentParser()
-    # ... (get_args function remains the same)
     # Train params
     parser.add_argument('--batch_size', default=128, type=int)
     parser.add_argument('--lr', default=0.001, type=float)
@@ -73,7 +72,6 @@ if __name__ == '__main__':
     dataset = MyDataset(data_path, args)
     train_dataset, valid_dataset = torch.utils.data.random_split(dataset, [0.9, 0.1])
     
-    # 在 DataLoader 中设置 pin_memory=True
     train_loader = DataLoader(
         train_dataset, 
         batch_size=args.batch_size, 
@@ -96,9 +94,9 @@ if __name__ == '__main__':
 
     model = BaselineModel(usernum, itemnum, feat_statistics, feat_types, args).to(args.device)
 
-    if hasattr(torch, 'compile'):
-        print("Compiling the model...")
-        model = torch.compile(model)
+    # if hasattr(torch, 'compile'):
+    #     print("Compiling the model...")
+    #     model = torch.compile(model)
 
     for name, param in model.named_parameters():
         try:
@@ -112,9 +110,7 @@ if __name__ == '__main__':
         model.sparse_emb[k].weight.data[0, :] = 0
 
     epoch_start_idx = 1
-    # ... (加载 checkpoint 的代码不变)
-
-    # ... (优化器和学习率调度器代码不变)
+    
     no_decay_types = (torch.nn.RMSNorm, torch.nn.Embedding)
     decay_params = []
     no_decay_params = []
@@ -157,11 +153,6 @@ if __name__ == '__main__':
             # 在这里将整个batch移动到GPU
             batch = move_batch_to_device(batch, args.device)
             seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat = batch
-            
-            # 不再需要手动移动单个张量
-            # seq = seq.to(args.device)
-            # pos = pos.to(args.device)
-            # neg = neg.to(args.device)
 
             pos_logits, neg_logits, log_feats, pos_embs, neg_embs = model(
                 seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat
@@ -179,7 +170,6 @@ if __name__ == '__main__':
 
             loss = infonce_loss 
             
-            # ... (日志记录部分不变)
             grad_norm = get_grad_norm(model)
             current_lr = optimizer.param_groups[0]['lr']
             log_json = json.dumps({
@@ -187,6 +177,10 @@ if __name__ == '__main__':
                 'lr': current_lr, 'grad_norm': grad_norm, 'epoch': epoch, 'time': time.time()
             })
             log_file.write(log_json + '\n'); log_file.flush(); print(log_json)
+            writer.add_scalar('Loss/train_infonce', infonce_loss.item(), global_step)
+            writer.add_scalar('Loss/train_total', loss.item(), global_step)
+            writer.add_scalar('LR', current_lr, global_step)
+
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
