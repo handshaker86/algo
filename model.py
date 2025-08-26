@@ -130,7 +130,7 @@ class BaselineModel(torch.nn.Module):
         self.attention_layers = torch.nn.ModuleList()
         self.forward_layernorms = torch.nn.ModuleList()
         self.forward_layers = torch.nn.ModuleList()
-        self.temp = 0.07
+        self.temp = 0.05
 
         self._init_feat_info(feat_statistics, feat_types)
 
@@ -145,12 +145,14 @@ class BaselineModel(torch.nn.Module):
 
         self.userdnn = torch.nn.Linear(userdim, args.hidden_units)
         self.itemdnn = torch.nn.Linear(itemdim, args.hidden_units)
+        self.userdnn_norm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
+        self.itemdnn_norm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
 
         # self.last_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
-        self.last_layernorm = torch.nn.RMSNorm(args.hidden_units, eps=1e-8)
+        self.last_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
         for _ in range(args.num_blocks):
             # new_attn_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
-            new_attn_layernorm = torch.nn.RMSNorm(args.hidden_units, eps=1e-8)
+            new_attn_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
             self.attention_layernorms.append(new_attn_layernorm)
 
             new_attn_layer = FlashMultiHeadAttention(
@@ -159,7 +161,7 @@ class BaselineModel(torch.nn.Module):
             self.attention_layers.append(new_attn_layer)
 
             # new_fwd_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
-            new_fwd_layernorm = torch.nn.RMSNorm(args.hidden_units, eps=1e-8)
+            new_fwd_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
             self.forward_layernorms.append(new_fwd_layernorm)
 
             new_fwd_layer = PointWiseFeedForward(args.hidden_units, args.dropout_rate)
@@ -175,7 +177,12 @@ class BaselineModel(torch.nn.Module):
             self.sparse_emb[k] = torch.nn.Embedding(self.USER_ARRAY_FEAT[k] + 1, args.hidden_units, padding_idx=0)
         for k in self.ITEM_EMB_FEAT:
             self.emb_transform[k] = torch.nn.Linear(self.ITEM_EMB_FEAT[k], args.hidden_units)
-
+            
+        torch.nn.init.constant_(self.item_emb.weight, 0)
+        torch.nn.init.constant_(self.user_emb.weight, 0)
+        for emb in self.sparse_emb.values():
+            torch.nn.init.constant_(emb.weight, 0)
+            
     def _init_feat_info(self, feat_statistics, feat_types):
         """
         将特征统计信息（特征数量）按特征类型分组产生不同的字典，方便声明稀疏特征的Embedding Table
@@ -309,9 +316,11 @@ class BaselineModel(torch.nn.Module):
         # merge features
         all_item_emb = torch.cat(item_feat_list, dim=2)
         all_item_emb = torch.relu(self.itemdnn(all_item_emb))
+        all_item_emb = self.itemdnn_norm(all_item_emb)
         if include_user:
             all_user_emb = torch.cat(user_feat_list, dim=2)
             all_user_emb = torch.relu(self.userdnn(all_user_emb))
+            all_user_emb = self.userdnn_norm(all_user_emb)
             seqs_emb = all_item_emb + all_user_emb
         else:
             seqs_emb = all_item_emb

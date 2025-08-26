@@ -276,7 +276,7 @@ if __name__ == '__main__':
                     if torch.isinf(param).any():
                         print(f"Inf in {name}")
 
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
             grad_norm_after = get_grad_norm(model)
 
             current_lr = optimizer.param_groups[0]['lr']
