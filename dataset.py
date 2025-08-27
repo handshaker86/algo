@@ -121,34 +121,34 @@ class MyDataset(torch.utils.data.Dataset):
         pos_feat_list = [None] * (self.maxlen + 1)
         neg_feat_list = [None] * (self.maxlen + 1)
 
-        nxt = ext_user_sequence[-1] if ext_user_sequence else (0, {}, 0, 0)
-        idx = self.maxlen
-
         ts = {rec[0] for rec in ext_user_sequence if rec[2] == 1 and rec[0]}
-
-        for record_tuple in reversed(ext_user_sequence[:-1]):
-            i, feat, type_, act_type = record_tuple
-            next_i, next_feat, next_type, next_act_type = nxt
-            
-            seq[idx] = i
-            token_type[idx] = type_
-            next_token_type[idx] = next_type
-            if next_act_type is not None:
-                next_action_type[idx] = next_act_type
-            
-            seq_feat_list[idx] = self.fill_missing_feat(feat, i)
-
-            if next_type == 1 and next_i != 0:
-                pos[idx] = next_i
-                pos_feat_list[idx] = self.fill_missing_feat(next_feat, next_i)
-                neg_id = self._random_neq(1, self.itemnum + 1, ts)
-                neg[idx] = neg_id
-                neg_feat_list[idx] = self.fill_missing_feat(self.item_feat_dict.get(str(neg_id)), neg_id)
-
-            nxt = record_tuple
-            idx -= 1
-            if idx < 0:
+        
+        idx = 0
+        for i, record_tuple in enumerate(ext_user_sequence):
+            if idx > self.maxlen:
                 break
+
+            item_id, feat, type_, act_type = record_tuple
+            seq[idx] = item_id
+            token_type[idx] = type_
+            seq_feat_list[idx] = self.fill_missing_feat(feat, item_id)
+
+            # 如果不是序列最后一个元素，则有下一个元素可以作为label
+            if i < len(ext_user_sequence) - 1:
+                next_i, next_feat, next_type, next_act_type = ext_user_sequence[i+1]
+
+                next_token_type[idx] = next_type
+                if next_act_type is not None:
+                    next_action_type[idx] = next_act_type
+
+                if next_type == 1 and next_i != 0:
+                    pos[idx] = next_i
+                    pos_feat_list[idx] = self.fill_missing_feat(next_feat, next_i)
+                    neg_id = self._random_neq(1, self.itemnum + 1, ts)
+                    neg[idx] = neg_id
+                    neg_feat_list[idx] = self.fill_missing_feat(self.item_feat_dict.get(str(neg_id)), neg_id)
+
+            idx += 1
         
         seq_feat = self._prepare_features(seq_feat_list)
         pos_feat = self._prepare_features(pos_feat_list)
@@ -303,14 +303,14 @@ class MyTestDataset(MyDataset):
         token_type = np.zeros(self.maxlen + 1, dtype=np.int32)
         seq_feat_list = [None] * (self.maxlen + 1)
         
-        idx = self.maxlen
-        for record_tuple in reversed(ext_user_sequence):
-            if idx < 0: break
+        idx = 0
+        for record_tuple in ext_user_sequence:
+            if idx > self.maxlen: break
             i, feat, type_ = record_tuple
             seq[idx] = i
             token_type[idx] = type_
             seq_feat_list[idx] = self.fill_missing_feat(feat, i)
-            idx -= 1
+            idx += 1
 
         seq_feat = self._prepare_features(seq_feat_list)
         return seq, token_type, seq_feat, user_id
